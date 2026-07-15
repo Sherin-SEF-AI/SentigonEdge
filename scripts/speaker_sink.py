@@ -17,7 +17,7 @@ import wave
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-OUT = Path("/tmp/claude-1000/-home-jo-Desktop-SentigonV2/3a740b2f-9c84-4929-8c2b-a4e140e75a86/scratchpad/talkdowns")
+OUT = Path("/tmp/sentigon-talkdowns")
 OUT.mkdir(parents=True, exist_ok=True)
 _played: list[dict] = []
 _seq = 0

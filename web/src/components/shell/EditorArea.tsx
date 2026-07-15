@@ -4,6 +4,9 @@ import { AdminScreen } from "@/components/admin/AdminScreen";
 import { AnalyticsScreen } from "@/components/analytics/AnalyticsScreen";
 import { ZoneEditor } from "@/components/cameras/ZoneEditor";
 import { CasesScreen } from "@/components/cases/CasesScreen";
+import { CrossSiteScreen } from "@/components/crosssite/CrossSiteScreen";
+import { DispatchScreen } from "@/components/dispatch/DispatchScreen";
+import { FleetScreen } from "@/components/fleet/FleetScreen";
 import { GraphScreen } from "@/components/graph/GraphScreen";
 import { HandoverScreen } from "@/components/handover/HandoverScreen";
 import { HealthScreen } from "@/components/health/HealthScreen";
@@ -52,6 +55,9 @@ export function EditorArea() {
   if (tool === "graph") return <GraphScreen />;
   if (tool === "health") return <HealthScreen />;
   if (tool === "handover") return <HandoverScreen />;
+  if (tool === "dispatch") return <DispatchScreen />;
+  if (tool === "fleet") return <FleetScreen />;
+  if (tool === "crosssite") return <CrossSiteScreen />;
   if (tool === "admin") return <AdminScreen />;
   return <Placeholder tool={tool} />;
 }

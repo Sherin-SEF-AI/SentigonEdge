@@ -77,6 +77,17 @@ class AccessEventType(str, enum.Enum):
     ZONE_TRIP = "zone_trip"
 
 
+class DispatchState(str, enum.Enum):
+    """Lifecycle of a responder dispatch for a confirmed incident."""
+
+    PENDING = "pending"          # created, responder not yet notified
+    NOTIFIED = "notified"        # on-call responder(s) notified
+    ACKNOWLEDGED = "acknowledged"  # a responder accepted it
+    RESOLVED = "resolved"        # responder cleared it
+    ESCALATED = "escalated"      # ack SLA breached, escalated up the tier
+    EXPIRED = "expired"          # resolve SLA breached without resolution
+
+
 class RecordingType(str, enum.Enum):
     CONTINUOUS = "continuous"
     EVENT = "event"

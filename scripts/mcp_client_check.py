@@ -2,7 +2,7 @@
 """Real MCP client: connect to the Sentigon MCP server over streamable-http,
 list its tools, and call each one, printing the real results. Proves the MCP
 surface works end to end with the official MCP client SDK (the same protocol
-Claude Desktop / other MCP hosts use).
+MCP hosts use).
 
     uv run python scripts/mcp_client_check.py
 """

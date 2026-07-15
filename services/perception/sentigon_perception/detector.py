@@ -40,7 +40,11 @@ class Detector:
         self.model_path = chosen
         self.device = 0 if device == "cuda" else "cpu"
         self.names: dict[int, str] = self.model.names
-        self.model.to("cuda" if device == "cuda" else "cpu")
+        # Exported engines (TensorRT .engine / ONNX) are already device-bound and reject
+        # .to(); only a .pt PyTorch model needs an explicit device move. Device is passed
+        # per-call to track() regardless, so the engine still runs on the GPU.
+        if str(chosen).endswith(".pt"):
+            self.model.to("cuda" if device == "cuda" else "cpu")
 
     def track(self, frame: np.ndarray) -> list[Detection]:
         result = self.model.track(

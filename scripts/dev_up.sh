@@ -34,6 +34,9 @@ run context 8040 "CONTEXT_HTTP_PORT=8040" sentigon_context
 run reason 8050 "REASON_HTTP_PORT=8050" sentigon_reason
 run notify 8070 "NOTIFY_HTTP_PORT=8070" sentigon_notify
 run search 8060 "SEARCH_HTTP_PORT=8060" sentigon_search
+run dispatch 8081 "DISPATCH_HTTP_PORT=8081" sentigon_dispatch
+run fleet 8082 "FLEET_HTTP_PORT=8082" sentigon_fleet
+run crosssite 8086 "CROSSSITE_HTTP_PORT=8086" sentigon_crosssite
 
 # MCP server (streamable-http; /healthz is not exposed, so gate on the port).
 if ! ss -ltn 2>/dev/null | grep -q ':8065'; then

@@ -19,6 +19,9 @@ export type ToolId =
   | "anomaly"
   | "fusion"
   | "handover"
+  | "dispatch"
+  | "fleet"
+  | "crosssite"
   | "admin";
 
 export interface Selection {

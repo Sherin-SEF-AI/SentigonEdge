@@ -20,10 +20,20 @@ dependencies = [
     "sentigon-notify",
     "sentigon-search",
     "sentigon-mcp",
+    "sentigon-dispatch",
+    "sentigon-fleet",
+    "sentigon-crosssite",
 ]
 
 [tool.uv]
 package = false
+# Pin the GPU torch set verified working on the Orin (sm_87, PTX-JIT). Version 2.11.0
+# on the jetson index ships WITHOUT the nvidia-* CUDA runtime libs and fails to load
+# libcublasLt; 2.13.0 bundles them (nvidia-cublas/cudnn/... cu13).
+constraint-dependencies = ["torch==2.13.0", "torchvision==0.28.0"]
+# This is a single-target deployment (Jetson, linux/aarch64). Limit universal
+# resolution to it so the jetson-only GPU torch pin doesn't have to satisfy win32 etc.
+environments = ["sys_platform == 'linux' and platform_machine == 'aarch64'"]
 
 [tool.uv.workspace]
 members = [
@@ -38,6 +48,9 @@ members = [
     "services/notify",
     "services/search",
     "services/mcp",
+    "services/dispatch",
+    "services/fleet",
+    "services/crosssite",
 ]
 
 [tool.uv.sources]
@@ -52,14 +65,14 @@ sentigon-reason = { workspace = true }
 sentigon-notify = { workspace = true }
 sentigon-search = { workspace = true }
 sentigon-mcp = { workspace = true }
-# Blackwell (RTX 5080, sm_120) needs CUDA 12.8 wheels; pin torch to that index.
-torch = { index = "pytorch-cu128" }
-torchvision = { index = "pytorch-cu128" }
-
-[[tool.uv.index]]
-name = "pytorch-cu128"
-url = "https://download.pytorch.org/whl/cu128"
-explicit = true
+sentigon-dispatch = { workspace = true }
+sentigon-fleet = { workspace = true }
+sentigon-crosssite = { workspace = true }
+# Jetson AGX Orin (sm_87, JetPack 7 / CUDA 13): torch/torchvision come from the default
+# PyPI index — recent aarch64 wheels (2.13.0) are CUDA-13 builds (for Grace/Thor) that
+# PTX-JIT onto the Orin iGPU at runtime. Verified: YOLO26n ~47ms/frame on GPU vs ~1600ms
+# on CPU. The sm_87 "unsupported" warning at import is cosmetic. Pinned in [tool.uv]
+# constraint-dependencies so we get the CUDA build + its nvidia-*-cu13 runtime libs.
 
 [dependency-groups]
 dev = [

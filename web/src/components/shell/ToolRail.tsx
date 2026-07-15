@@ -4,7 +4,10 @@ import {
   Activity,
   Boxes,
   Camera,
+  ClipboardList,
+  Globe,
   Grid2x2,
+  HeartPulse,
   Map,
   Network,
   Search,
@@ -29,6 +32,9 @@ const TOOLS: { id: ToolId; icon: React.ComponentType<{ size?: number }>; label: 
   { id: "signatures", icon: ShieldAlert, label: "Signatures" },
   { id: "analytics", icon: Activity, label: "Analytics" },
   { id: "health", icon: SlidersHorizontal, label: "Health" },
+  { id: "dispatch", icon: ClipboardList, label: "SOC Dispatch" },
+  { id: "fleet", icon: HeartPulse, label: "Fleet Health" },
+  { id: "crosssite", icon: Globe, label: "Cross-Site" },
   { id: "admin", icon: Shield, label: "Admin" },
 ];
 

@@ -129,6 +129,9 @@ async def verify(candidate: dict) -> dict:
         "model": common.reason_model,
         "temperature": 0.1,
         "stream": False,
+        # The verdict JSON is short (~150 tokens); cap generation so a rambling model
+        # can never stall a verification, and to bound VLM tail latency.
+        "max_tokens": 512,
         "messages": [{"role": "user", "content": content}],
     }
     t = time.perf_counter()

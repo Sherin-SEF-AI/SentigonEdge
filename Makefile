@@ -8,7 +8,7 @@ UVRUN := uv run
 
 .DEFAULT_GOAL := help
 
-.PHONY: help up down restart ps logs wait sync migrate seed eval bench fmt lint typecheck test clean nuke samples samples-stop ingest runpod-burst runpod-volume runpod-volume-delete
+.PHONY: help up down restart ps logs wait sync migrate seed eval bench fmt lint typecheck test clean nuke samples samples-stop ingest runpod-burst runpod-volume runpod-volume-delete dispatch fleet crosssite
 
 help: ## show targets
 	@grep -hE '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-12s\033[0m %s\n",$$1,$$2}'
@@ -87,6 +87,15 @@ notify: sync ## run notify (real email+webhook on confirmed incidents; needs mai
 
 search: sync ## run semantic search (CLIP index of incident snapshots -> Qdrant) on :8060
 	SEARCH_HTTP_PORT=$(or $(SEARCH_PORT),8060) $(UVRUN) python -m sentigon_search
+
+dispatch: sync ## run the managed-SOC dispatch service on :8081
+	DISPATCH_HTTP_PORT=$(or $(DISPATCH_PORT),8081) $(UVRUN) python -m sentigon_dispatch
+
+fleet: sync ## run the fleet health diagnostics service on :8082
+	FLEET_HTTP_PORT=$(or $(FLEET_PORT),8082) $(UVRUN) python -m sentigon_fleet
+
+crosssite: sync ## run the cross-site intelligence service on :8086
+	CROSSSITE_HTTP_PORT=$(or $(CROSSSITE_PORT),8086) $(UVRUN) python -m sentigon_crosssite
 
 fmt: sync ## format code
 	$(UVRUN) ruff check --fix .

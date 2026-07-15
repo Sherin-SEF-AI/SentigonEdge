@@ -30,6 +30,9 @@ SERVICES=(
   "notify 8070 sentigon_notify"
   "search 8060 sentigon_search"
   "mcp 8065 sentigon_mcp"
+  "dispatch 8081 sentigon_dispatch"
+  "fleet 8082 sentigon_fleet"
+  "crosssite 8086 sentigon_crosssite"
 )
 
 # Ollama (VLM backend) as its own unit, pointed at the real model store.

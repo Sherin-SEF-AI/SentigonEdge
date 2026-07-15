@@ -29,6 +29,9 @@ export function CommandPalette() {
       ["cameras", "Go to Cameras"],
       ["signatures", "Go to Signatures"],
       ["health", "Go to Health"],
+      ["dispatch", "Go to SOC Dispatch"],
+      ["fleet", "Go to Fleet Health"],
+      ["crosssite", "Go to Cross-Site"],
     ];
     const base: Command[] = tools.map(([id, label]) => ({
       id: `tool:${id}`,

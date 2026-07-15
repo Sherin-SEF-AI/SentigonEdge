@@ -4,6 +4,7 @@
 !.env.example
 .runpod.env
 *.local
+configs/media_sources.local.yaml
 
 # ---- Python ----
 .venv/
@@ -60,9 +61,10 @@ minio-data/
 pgdata/
 qdrant-storage/
 
-# ---- OS / editor ----
+# ---- OS / editor / tooling ----
 .DS_Store
 Thumbs.db
 *.swp
 .idea/
 .vscode/
+.claude/

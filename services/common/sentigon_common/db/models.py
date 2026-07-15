@@ -39,6 +39,7 @@ from ..schemas.enums import (
     CameraStatus,
     CaseStatus,
     DetectionMethod,
+    DispatchState,
     IncidentStatus,
     ModelRole,
     ModelStage,
@@ -679,6 +680,220 @@ class WatchlistEntry(Base):
     created_at: Mapped[datetime] = _created()
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# Enterprise-parity phase: managed-SOC dispatch, fleet health, cross-site intel.
+# Added as additive tables (no changes to the governed core above).
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+class Responder(Base):
+    """A field/security responder who can be dispatched to a confirmed incident.
+    Channels holds real delivery targets ({"email":..,"webhook":..,"webpush":true,
+    "sms":..}). site_id None = eligible for all sites."""
+
+    __tablename__ = "responders"
+
+    id: Mapped[uuid.UUID] = _pk()
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    email: Mapped[str | None] = mapped_column(String(255))
+    phone: Mapped[str | None] = mapped_column(String(64))
+    role: Mapped[str] = mapped_column(String(64), default="responder", nullable=False)
+    channels: Mapped[dict | None] = mapped_column(JSONB, default=dict)
+    site_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("sites.id", ondelete="SET NULL"))
+    active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    created_at: Mapped[datetime] = _created()
+
+
+class OncallShift(Base):
+    """On-call rotation window. Resolves which responder(s) are on-call for a site at
+    a given local hour. weekday None = every day; site_id None = all sites; tier drives
+    escalation order (tier 1 notified first)."""
+
+    __tablename__ = "oncall_shifts"
+    __table_args__ = (Index("ix_oncall_shifts_active", "active"),)
+
+    id: Mapped[uuid.UUID] = _pk()
+    responder_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("responders.id", ondelete="CASCADE"), nullable=False
+    )
+    site_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("sites.id", ondelete="SET NULL"))
+    weekday: Mapped[int | None] = mapped_column(Integer)  # 0=Mon..6=Sun, None=any
+    start_hour: Mapped[int] = mapped_column(Integer, default=0, nullable=False)  # 0..23
+    end_hour: Mapped[int] = mapped_column(Integer, default=24, nullable=False)  # 1..24
+    tier: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    created_at: Mapped[datetime] = _created()
+
+
+class Dispatch(Base):
+    """A responder dispatch created from a confirmed incident, with SLA tracking."""
+
+    __tablename__ = "dispatches"
+    __table_args__ = (
+        Index("ix_dispatches_state", "state"),
+        Index("ix_dispatches_created", "created_at"),
+        Index("ix_dispatches_incident", "incident_id"),
+    )
+
+    id: Mapped[uuid.UUID] = _pk()
+    seq: Mapped[int] = _seq()
+    incident_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("incidents.id", ondelete="CASCADE"), nullable=False
+    )
+    camera_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("cameras.id", ondelete="SET NULL"))
+    site_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("sites.id", ondelete="SET NULL"))
+    responder_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("responders.id", ondelete="SET NULL")
+    )
+    severity: Mapped[Severity] = mapped_column(
+        Enum(Severity, name="severity"), default=Severity.MEDIUM, nullable=False
+    )
+    risk_score: Mapped[int | None] = mapped_column(Integer)
+    signature_name: Mapped[str | None] = mapped_column(String(255))
+    sitrep: Mapped[str | None] = mapped_column(Text)
+    state: Mapped[DispatchState] = mapped_column(
+        Enum(DispatchState, name="dispatch_state"),
+        default=DispatchState.PENDING,
+        nullable=False,
+        index=True,
+    )
+    tier: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    sla_ack_seconds: Mapped[int] = mapped_column(Integer, default=300, nullable=False)
+    sla_resolve_seconds: Mapped[int] = mapped_column(Integer, default=1800, nullable=False)
+    notified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    acknowledged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    ack_by: Mapped[str | None] = mapped_column(String(255))
+    channels_used: Mapped[dict | None] = mapped_column(JSONB, default=dict)
+    notes: Mapped[str | None] = mapped_column(Text)
+    correlation_id: Mapped[str | None] = mapped_column(String(64), index=True)
+    created_at: Mapped[datetime] = _created()
+    updated_at: Mapped[datetime] = _updated()
+
+
+class SocShift(Base):
+    """Operator monitoring shift (check-in / check-out) for the SOC console."""
+
+    __tablename__ = "soc_shifts"
+    __table_args__ = (Index("ix_soc_shifts_active", "active"),)
+
+    id: Mapped[uuid.UUID] = _pk()
+    operator: Mapped[str] = mapped_column(String(255), nullable=False)
+    user_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    started_at: Mapped[datetime] = _created()
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    note: Mapped[str | None] = mapped_column(Text)
+
+
+class FleetSnapshot(Base):
+    """A periodic fleet-wide health rollup (cameras + services + host)."""
+
+    __tablename__ = "fleet_snapshots"
+    __table_args__ = (Index("ix_fleet_snapshots_ts", "ts"),)
+
+    id: Mapped[uuid.UUID] = _pk()
+    ts: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    cameras_total: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    cameras_online: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    services_total: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    services_up: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    findings_active: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    disk_pct: Mapped[float | None] = mapped_column(Float)
+    mem_pct: Mapped[float | None] = mapped_column(Float)
+    gpu_pct: Mapped[float | None] = mapped_column(Float)
+    load1: Mapped[float | None] = mapped_column(Float)
+    payload: Mapped[dict | None] = mapped_column(JSONB, default=dict)
+    created_at: Mapped[datetime] = _created()
+
+
+class FleetFinding(Base):
+    """A diagnostics finding raised by the fleet health engine. Deduped on
+    (kind, target_id): re-raising updates last_seen_at; clearing sets resolved_at."""
+
+    __tablename__ = "fleet_findings"
+    __table_args__ = (
+        Index("ix_fleet_findings_active", "active"),
+        Index("ix_fleet_findings_target", "target_type", "target_id"),
+    )
+
+    id: Mapped[uuid.UUID] = _pk()
+    kind: Mapped[str] = mapped_column(String(64), nullable=False)
+    severity: Mapped[Severity] = mapped_column(
+        Enum(Severity, name="severity"), default=Severity.MEDIUM, nullable=False
+    )
+    target_type: Mapped[str] = mapped_column(String(32), nullable=False)  # camera | service | host
+    target_id: Mapped[str | None] = mapped_column(String(128))
+    target_name: Mapped[str | None] = mapped_column(String(255))
+    detail: Mapped[str] = mapped_column(Text, nullable=False)
+    metric: Mapped[dict | None] = mapped_column(JSONB, default=dict)
+    recommended_action: Mapped[str | None] = mapped_column(Text)
+    site_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("sites.id", ondelete="SET NULL"))
+    active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    first_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    last_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = _created()
+
+
+class PlateSighting(Base):
+    """A license-plate reading tied to a site+camera. The salted plate_hash is a
+    deterministic, site-agnostic identity key used for cross-site vehicle linking."""
+
+    __tablename__ = "plate_sightings"
+    __table_args__ = (
+        Index("ix_plate_sightings_hash", "plate_hash"),
+        Index("ix_plate_sightings_ts", "ts"),
+    )
+
+    id: Mapped[uuid.UUID] = _pk()
+    seq: Mapped[int] = _seq()
+    plate_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    plate_text: Mapped[str | None] = mapped_column(String(32))
+    site_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("sites.id", ondelete="SET NULL"))
+    camera_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("cameras.id", ondelete="SET NULL"))
+    track_id: Mapped[int | None] = mapped_column(Integer)
+    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = _created()
+
+
+class CrossSiteLink(Base):
+    """The same entity (a plate hash or an appearance/ReID vector) observed at two or
+    more distinct sites. entity_type = plate | appearance."""
+
+    __tablename__ = "cross_site_links"
+    __table_args__ = (
+        Index("ix_cross_site_links_active", "active"),
+        Index("ix_cross_site_links_key", "entity_type", "entity_key"),
+    )
+
+    id: Mapped[uuid.UUID] = _pk()
+    entity_type: Mapped[str] = mapped_column(String(32), nullable=False)  # plate | appearance
+    entity_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    label: Mapped[str | None] = mapped_column(String(255))
+    sites: Mapped[list | None] = mapped_column(JSONB, default=list)  # [site_id, ...]
+    site_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    sighting_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    cameras: Mapped[list | None] = mapped_column(JSONB, default=list)
+    score: Mapped[float | None] = mapped_column(Float)  # similarity for appearance links
+    detail: Mapped[dict | None] = mapped_column(JSONB, default=dict)
+    active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    first_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    last_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    created_at: Mapped[datetime] = _created()
+    updated_at: Mapped[datetime] = _updated()
+
+
 __all__ = [
     "Base",
     "Site",
@@ -704,4 +919,12 @@ __all__ = [
     "ZoneSnapshot",
     "ScheduleWindow",
     "NLAlert",
+    "Responder",
+    "OncallShift",
+    "Dispatch",
+    "SocShift",
+    "FleetSnapshot",
+    "FleetFinding",
+    "PlateSighting",
+    "CrossSiteLink",
 ]

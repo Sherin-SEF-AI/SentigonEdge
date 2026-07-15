@@ -555,3 +555,194 @@ export const ingest = {
   cameras: (signal?: AbortSignal) => getJSON<unknown[]>(`${INGEST_URL}/cameras`, signal),
   readyz: (signal?: AbortSignal) => getJSON<{ status: string }>(`${INGEST_URL}/readyz`, signal),
 };
+
+// ── SOC Dispatch (8081), Fleet Health (8082), Cross-Site (8086) ──────────────
+export const DISPATCH_URL = process.env.NEXT_PUBLIC_DISPATCH_URL ?? "http://localhost:8081";
+export const FLEET_URL = process.env.NEXT_PUBLIC_FLEET_URL ?? "http://localhost:8082";
+export const CROSSSITE_URL = process.env.NEXT_PUBLIC_CROSSSITE_URL ?? "http://localhost:8086";
+
+export interface Dispatch {
+  id: string;
+  incident_id: string;
+  camera_id: string | null;
+  site_id: string | null;
+  responder_id: string | null;
+  responder_name: string | null;
+  severity: string;
+  risk_score: number | null;
+  signature_name: string | null;
+  sitrep: string | null;
+  state: string;
+  tier: number;
+  notified_at: string | null;
+  acknowledged_at: string | null;
+  resolved_at: string | null;
+  ack_by: string | null;
+  created_at: string;
+  sla_ack_seconds: number;
+}
+
+export interface Responder {
+  id: string;
+  name: string;
+  email: string | null;
+  phone: string | null;
+  role: string;
+  channels: string[];
+  site_id: string | null;
+  active: boolean;
+}
+
+export interface Shift {
+  id: string;
+  operator: string;
+  started_at: string;
+  active: boolean;
+}
+
+export const dispatch = {
+  stats: (signal?: AbortSignal) => getJSON<Record<string, number>>(`${DISPATCH_URL}/stats`, signal),
+  list: (state?: string, signal?: AbortSignal) =>
+    getJSON<Dispatch[]>(`${DISPATCH_URL}/dispatches${state ? `?state=${state}` : ""}`, signal),
+  ack: (id: string, by?: string) =>
+    fetch(`${DISPATCH_URL}/dispatches/${id}/ack`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...authHeaders() },
+      body: JSON.stringify({ by }),
+    }).then((r) => r.json()),
+  resolve: (id: string, by?: string, notes?: string) =>
+    fetch(`${DISPATCH_URL}/dispatches/${id}/resolve`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...authHeaders() },
+      body: JSON.stringify({ by, notes }),
+    }).then((r) => r.json()),
+  responders: (signal?: AbortSignal) => getJSON<Responder[]>(`${DISPATCH_URL}/responders`, signal),
+  activeShifts: (signal?: AbortSignal) => getJSON<Shift[]>(`${DISPATCH_URL}/shifts/active`, signal),
+  checkin: (operator: string) =>
+    fetch(`${DISPATCH_URL}/shifts/checkin`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...authHeaders() },
+      body: JSON.stringify({ operator }),
+    }).then((r) => r.json()),
+  checkout: (operator: string) =>
+    fetch(`${DISPATCH_URL}/shifts/checkout`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...authHeaders() },
+      body: JSON.stringify({ operator }),
+    }).then((r) => r.json()),
+};
+
+export interface FleetOverview {
+  cameras_total: number;
+  cameras_online: number;
+  services_total: number;
+  services_up: number;
+  findings_active: number;
+  host: {
+    disk_pct: number | null;
+    mem_pct: number | null;
+    gpu_pct: number | null;
+    load1: number | null;
+    cpu_count?: number;
+  };
+  severity?: Record<string, number>;
+}
+
+export interface FleetCameraHealth {
+  status?: string;
+  fps?: number;
+  jitter_ms?: number;
+  reconnects?: number;
+  decode_errors?: number;
+  frames_total?: number;
+  resolution?: string | null;
+}
+
+export interface FleetCamera {
+  id: string;
+  name: string;
+  site_id: string | null;
+  status: string;
+  health: FleetCameraHealth | null;
+  last_seen: string | null;
+  target_fps: number | null;
+}
+
+export interface FleetService {
+  name: string;
+  up: boolean;
+  detail: string;
+  stats: Record<string, unknown> | null;
+  latency_ms: number;
+}
+
+export interface FleetFinding {
+  id: string;
+  kind: string;
+  severity: string;
+  target_type: string;
+  target_id: string | null;
+  target_name: string | null;
+  detail: string | null;
+  metric: number | null;
+  recommended_action: string | null;
+  active: boolean;
+  first_seen_at: string | null;
+  last_seen_at: string | null;
+}
+
+export const fleet = {
+  overview: (signal?: AbortSignal) => getJSON<FleetOverview>(`${FLEET_URL}/fleet/overview`, signal),
+  cameras: (signal?: AbortSignal) => getJSON<FleetCamera[]>(`${FLEET_URL}/fleet/cameras`, signal),
+  services: (signal?: AbortSignal) => getJSON<FleetService[]>(`${FLEET_URL}/fleet/services`, signal),
+  findings: (signal?: AbortSignal) => getJSON<FleetFinding[]>(`${FLEET_URL}/fleet/findings?active=true`, signal),
+};
+
+export interface SiteOverview {
+  id: string;
+  name: string;
+  timezone: string | null;
+  camera_count: number;
+  online_cameras: number;
+  open_incidents: number;
+  cross_site_links?: number;
+}
+
+export interface Site {
+  id: string;
+  name: string;
+  address: string | null;
+  timezone: string | null;
+  center: unknown;
+  meta: Record<string, unknown> | null;
+  created_at: string | null;
+  camera_count: number;
+  online_cameras: number;
+}
+
+export interface CrossSiteLink {
+  id: string;
+  entity_type: string;
+  entity_key: string;
+  label: string | null;
+  sites: string[];
+  site_count: number;
+  sighting_count: number;
+  cameras: string[];
+  score: number | null;
+  active: boolean;
+  first_seen_at: string | null;
+  last_seen_at: string | null;
+}
+
+export const crosssite = {
+  overview: (signal?: AbortSignal) => getJSON<SiteOverview[]>(`${CROSSSITE_URL}/overview`, signal),
+  sites: (signal?: AbortSignal) => getJSON<Site[]>(`${CROSSSITE_URL}/sites`, signal),
+  links: (signal?: AbortSignal) => getJSON<CrossSiteLink[]>(`${CROSSSITE_URL}/crosssite/links?active=true`, signal),
+  createSite: (body: { name: string; address?: string; timezone?: string }) =>
+    fetch(`${CROSSSITE_URL}/sites`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...authHeaders() },
+      body: JSON.stringify(body),
+    }).then((r) => r.json()),
+};

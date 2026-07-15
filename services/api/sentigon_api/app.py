@@ -2449,6 +2449,9 @@ _SERVICE_PROBES = [
     ("mediasource", "http://localhost:8055/healthz", None),
     ("search", "http://localhost:8060/healthz", "http://localhost:8060/stats"),
     ("notify", "http://localhost:8070/healthz", "http://localhost:8070/stats"),
+    ("dispatch", "http://localhost:8081/healthz", "http://localhost:8081/stats"),
+    ("fleet", "http://localhost:8082/healthz", "http://localhost:8082/stats"),
+    ("crosssite", "http://localhost:8086/healthz", "http://localhost:8086/stats"),
 ]
 
 

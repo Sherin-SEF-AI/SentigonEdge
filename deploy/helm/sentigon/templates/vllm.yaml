@@ -1,0 +1,68 @@
+{{- if .Values.vllm.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-vllm
+  labels:
+    app.kubernetes.io/name: {{ .Release.Name }}-vllm
+    app.kubernetes.io/component: vllm
+    {{- include "sentigon.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ .Release.Name }}-vllm
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ .Release.Name }}-vllm
+    spec:
+      {{- with .Values.vllm.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.vllm.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: vllm
+          image: {{ .Values.vllm.image | quote }}
+          args:
+            - "--model={{ .Values.vllm.model }}"
+            - "--served-model-name={{ .Values.vllm.servedModelName }}"
+            - "--max-model-len={{ .Values.vllm.maxModelLen }}"
+            - "--gpu-memory-utilization={{ .Values.vllm.gpuMemoryUtilization }}"
+          env:
+            - name: HUGGING_FACE_HUB_TOKEN
+              value: {{ .Values.vllm.hfToken | quote }}
+          ports:
+            - name: http
+              containerPort: 8000
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 120
+            periodSeconds: 20
+            failureThreshold: 30
+          resources:
+            limits:
+              {{- toYaml .Values.vllm.resources.limits | nindent 14 }}
+              nvidia.com/gpu: {{ .Values.vllm.gpu }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-vllm
+  labels:
+    app.kubernetes.io/name: {{ .Release.Name }}-vllm
+    {{- include "sentigon.labels" . | nindent 4 }}
+spec:
+  selector:
+    app.kubernetes.io/name: {{ .Release.Name }}-vllm
+  ports:
+    - name: http
+      port: 8000
+      targetPort: http
+{{- end }}

@@ -1,0 +1,71 @@
+{
+  "gold_set": "coco-val2017",
+  "images": 5000,
+  "classes_evaluated": 10,
+  "mAP50": 0.6492,
+  "mAP50_95": 0.4612,
+  "precision": 0.6985,
+  "recall": 0.5839,
+  "per_class": {
+    "person": {
+      "precision": 0.7836,
+      "recall": 0.7874,
+      "ap50": 0.8473,
+      "ap50_95": 0.6309
+    },
+    "bicycle": {
+      "precision": 0.7514,
+      "recall": 0.5198,
+      "ap50": 0.6314,
+      "ap50_95": 0.403
+    },
+    "car": {
+      "precision": 0.7147,
+      "recall": 0.684,
+      "ap50": 0.7414,
+      "ap50_95": 0.5188
+    },
+    "motorcycle": {
+      "precision": 0.7679,
+      "recall": 0.7112,
+      "ap50": 0.7806,
+      "ap50_95": 0.5443
+    },
+    "bus": {
+      "precision": 0.8276,
+      "recall": 0.8198,
+      "ap50": 0.8783,
+      "ap50_95": 0.7587
+    },
+    "truck": {
+      "precision": 0.6174,
+      "recall": 0.5749,
+      "ap50": 0.6036,
+      "ap50_95": 0.4448
+    },
+    "backpack": {
+      "precision": 0.5744,
+      "recall": 0.3529,
+      "ap50": 0.4061,
+      "ap50_95": 0.2395
+    },
+    "handbag": {
+      "precision": 0.5908,
+      "recall": 0.3704,
+      "ap50": 0.4161,
+      "ap50_95": 0.254
+    },
+    "suitcase": {
+      "precision": 0.6982,
+      "recall": 0.6522,
+      "ap50": 0.7267,
+      "ap50_95": 0.5176
+    },
+    "knife": {
+      "precision": 0.6587,
+      "recall": 0.3662,
+      "ap50": 0.4608,
+      "ap50_95": 0.3003
+    }
+  }
+}

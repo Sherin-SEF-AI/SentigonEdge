@@ -1,0 +1,26 @@
+# nvinfer primary GIE: YOLO26 (NMS-free, end-to-end), TensorRT FP16.
+# Export the .onnx and build the engine on the target GPU (see models/export.md).
+[property]
+gpu-id=0
+net-scale-factor=0.0039215697906911373
+model-color-format=0
+onnx-file=yolo26x.onnx
+model-engine-file=yolo26x.onnx_b8_gpu0_fp16.engine
+labelfile-path=labels_coco.txt
+batch-size=8
+network-mode=2
+num-detected-classes=80
+interval=0
+gie-unique-id=1
+process-mode=1
+network-type=0
+cluster-mode=4
+maintain-aspect-ratio=1
+symmetric-padding=1
+# YOLO26 is end-to-end (no NMS); use the NvDsInferParseYolo end-to-end parser.
+parse-bbox-func-name=NvDsInferParseYoloE2E
+custom-lib-path=/opt/nvidia/deepstream/deepstream/lib/libnvdsinfer_custom_impl_Yolo.so
+
+[class-attrs-all]
+pre-cluster-threshold=0.35
+topk=300

@@ -1,0 +1,130 @@
+# Real internet media sources, restreamed as live RTSP cameras through MediaMTX.
+# This is the permitted hardware substitution (a real video feed over the real RTSP
+# path stands in for a camera device). Everything after RTSP ingress stays real:
+# real frames, real YOLO26 inference, real tracks, real events. No fabricated data.
+#
+# Sources are real, publicly available, appropriately licensed surveillance-style
+# footage of public/monitored spaces (Intel IoT devkit sample-videos, Apache-2.0).
+# type: file (loop with correct timestamps) | hls | rtsp (live relay + reconnect).
+# Each maps to a real Camera + a real Zone created through the API onboarding path.
+
+sources:
+- name: Entrance Hall
+  type: file
+  url: /home/jo/Desktop/SentigonV2/media/clips/people-detection.mp4
+  path: cam_entrance
+  fps: 12
+  resolution: 768x432
+  zone:
+    name: Entrance Threshold
+    type: entry
+    polygon:
+    - - 0.14
+      - 0.18
+    - - 0.86
+      - 0.18
+    - - 0.86
+      - 0.96
+    - - 0.14
+      - 0.96
+    max_occupancy: 5
+- name: Warehouse Floor
+  type: file
+  url: /home/jo/Desktop/SentigonV2/media/clips/worker-zone-detection.mp4
+  path: cam_warehouse
+  fps: 15
+  resolution: 1280x720
+  zone:
+    name: Machinery Exclusion Zone
+    type: exclusion
+    polygon:
+    - - 0.3
+      - 0.28
+    - - 0.96
+      - 0.28
+    - - 0.96
+      - 0.96
+    - - 0.3
+      - 0.96
+- name: Street Perimeter
+  type: file
+  url: /home/jo/Desktop/SentigonV2/media/clips/person-bicycle-car-detection.mp4
+  path: cam_street
+  fps: 12
+  resolution: 768x432
+  zone:
+    name: North Perimeter
+    type: perimeter
+    polygon:
+    - - 0.08
+      - 0.34
+    - - 0.92
+      - 0.34
+    - - 0.98
+      - 0.96
+    - - 0.02
+      - 0.96
+- name: Retail Aisle
+  type: file
+  url: /home/jo/Desktop/SentigonV2/media/clips/person-bicycle-car-detection.mp4
+  path: cam_retail
+  fps: 15
+  resolution: 1280x720
+  zone:
+    name: Restricted Aisle
+    type: restricted
+    polygon:
+    - - 0.18
+      - 0.22
+    - - 0.82
+      - 0.22
+    - - 0.88
+      - 0.96
+    - - 0.12
+      - 0.96
+- name: USB Camera
+  type: usb
+  url: /dev/video0
+  path: cam_usb0
+  fps: 15
+  resolution: 1280x720
+  input_format: mjpeg
+  zone:
+    name: Camera FOV
+    type: general
+- name: Retail Corridor B
+  type: file
+  url: /home/jo/Desktop/SentigonV2/media/clips/person-bicycle-car-detection.mp4
+  path: cam_retail_b
+  fps: 15
+  resolution: 1280x720
+  zone:
+    name: Corridor B FOV
+    type: general
+- name: Fall Detection Cam
+  type: file
+  url: /home/jo/Desktop/SentigonV2/media/clips/fall-rgb.mp4
+  path: cam_fall
+  fps: 30
+  resolution: 320x240
+  zone:
+    name: Fall Monitoring Area
+    type: general
+- name: ANPR Gate
+  type: file
+  url: /home/jo/Desktop/SentigonV2/media/clips/license-plate-traffic.mp4
+  path: cam_anpr
+  fps: 30
+  resolution: 1280x720
+  zone:
+    name: Vehicle Gate
+    type: general
+    polygon:
+    - - 0.05
+      - 0.30
+    - - 0.95
+      - 0.30
+    - - 0.95
+      - 0.98
+    - - 0.05
+      - 0.98

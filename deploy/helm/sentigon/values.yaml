@@ -1,0 +1,129 @@
+# Sentigon V2 Helm values.
+# Application images are built from deploy/docker/* and pushed to a registry;
+# override image.repository/tag for your registry. Data services (postgres,
+# redis, kafka, qdrant, minio) are external here: point the infra.* URLs at
+# managed services or at in-cluster deployments you run separately. On RunPod,
+# layer values-runpod.yaml on top for the A100/H100 GPU tier.
+
+image:
+  repository: ghcr.io/sentigon/sentigon
+  tag: "0.1.0"
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+
+# External data-plane endpoints (managed or separately deployed).
+infra:
+  databaseUrl: "postgresql+asyncpg://sentigon:sentigon@postgres:5432/sentigon"
+  redisUrl: "redis://redis:6379/0"
+  kafkaBootstrap: "redpanda:9092"
+  qdrantUrl: "http://qdrant:6333"
+  minioEndpoint: "minio:9000"
+  minioSecure: "false"
+
+# Reasoning (VLM) backend. On RunPod this points at the in-cluster vLLM service.
+reason:
+  backend: "vllm"
+  model: "Qwen/Qwen3-VL-32B-Instruct"
+  endpoint: "http://sentigon-vllm:8000/v1"
+
+# Secrets. Set real values via --set or a sealed secret; never commit real ones.
+secrets:
+  jwtSecret: "change-me-in-production"
+  serviceToken: "change-me-in-production"
+  minioAccessKey: "sentigon"
+  minioSecretKey: "sentigon123"
+  adminEmail: "admin@sentigon.local"
+  adminPassword: ""
+
+resources:
+  requests:
+    cpu: "100m"
+    memory: "256Mi"
+  limits:
+    cpu: "1000m"
+    memory: "1Gi"
+
+# Stateless HTTP services: one Deployment + Service each, /healthz + /readyz probed.
+services:
+  api:
+    module: sentigon_api
+    port: 8010
+    replicas: 2
+  ingest:
+    module: sentigon_ingest
+    port: 8020
+    replicas: 1
+  context:
+    module: sentigon_context
+    port: 8040
+    replicas: 1
+  search:
+    module: sentigon_search
+    port: 8060
+    replicas: 1
+  notify:
+    module: sentigon_notify
+    port: 8070
+    replicas: 1
+  mediasource:
+    module: sentigon_mediasource
+    port: 8055
+    replicas: 1
+
+# MCP server (streamable-http, TCP-probed, no /healthz).
+mcp:
+  enabled: true
+  module: sentigon_mcp
+  port: 8065
+  replicas: 1
+
+# GPU perception worker (YOLO26 + ByteTrack + ReID). Needs a GPU node.
+perception:
+  enabled: true
+  module: sentigon_perception
+  port: 8030
+  replicas: 1
+  gpu: 1
+  image:
+    repository: ghcr.io/sentigon/sentigon-gpu
+    tag: "0.1.0"
+  nodeSelector: {}
+  tolerations: []
+  resources:
+    limits:
+      cpu: "4000m"
+      memory: "12Gi"
+
+# vLLM OpenAI-compatible serving for Qwen3-VL (the RunPod reason tier).
+vllm:
+  enabled: true
+  image: "vllm/vllm-openai:latest"
+  model: "Qwen/Qwen3-VL-32B-Instruct"
+  servedModelName: "reason"
+  maxModelLen: 32768
+  gpuMemoryUtilization: "0.90"
+  gpu: 1
+  hfToken: ""
+  nodeSelector: {}
+  tolerations: []
+  resources:
+    limits:
+      memory: "80Gi"
+
+# Next.js operations console.
+web:
+  enabled: true
+  image:
+    repository: ghcr.io/sentigon/sentigon-web
+    tag: "0.1.0"
+  port: 3000
+  replicas: 1
+  apiUrl: "http://sentigon-api:8010"
+  ingestUrl: "http://sentigon-ingest:8020"
+  searchUrl: "http://sentigon-search:8060"
+
+ingress:
+  enabled: false
+  className: "nginx"
+  host: "sentigon.local"
+  tls: false

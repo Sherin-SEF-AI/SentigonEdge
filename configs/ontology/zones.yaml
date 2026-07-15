@@ -1,0 +1,32 @@
+# Default facility ontology seeded by `make seed`. A single demo site with zones
+# spanning the semantic types the signature library reasons over. Real deployments
+# define these in the UI ROI editor (Phase 3); this makes the stack exercisable now.
+#
+# polygon: normalized (0..1) camera-image-space points, resolution independent.
+# The perception zone-hit test and the console overlay both scale these to pixels.
+
+site:
+  name: "HQ Campus"
+  address: "1 Sentigon Way"
+  timezone: "UTC"
+  center: { lat: 37.7793, lng: -122.4193 }
+
+zones:
+  - name: "Main Lobby"
+    zone_type: entry
+    max_occupancy: 40
+    polygon: [[0.20, 0.45], [0.80, 0.45], [0.96, 0.98], [0.04, 0.98]]
+  - name: "Loading Dock"
+    zone_type: loading_dock
+    polygon: [[0.15, 0.50], [0.85, 0.50], [0.95, 0.98], [0.05, 0.98]]
+  - name: "North Perimeter"
+    zone_type: perimeter
+    polygon: [[0.30, 0.40], [0.70, 0.40], [0.85, 0.95], [0.15, 0.95]]
+  - name: "Parking Lot A"
+    zone_type: parking
+    polygon: [[0.10, 0.42], [0.90, 0.42], [0.98, 0.98], [0.02, 0.98]]
+  - name: "Server Room"
+    zone_type: restricted
+  - name: "Production Floor"
+    zone_type: production_floor
+    max_occupancy: 120

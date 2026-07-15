@@ -1,0 +1,16 @@
+# Next.js 16 operations console. Two-stage: build, then a lean runtime.
+FROM node:22-slim AS build
+WORKDIR /app
+COPY web/package.json web/package-lock.json ./
+RUN npm ci
+COPY web/ ./
+# API origins are read at runtime from NEXT_PUBLIC_* env; build with placeholders.
+RUN npm run build
+
+FROM node:22-slim
+WORKDIR /app
+ENV NODE_ENV=production
+COPY --from=build /app ./
+EXPOSE 3000
+# Respect the injected PORT (defaults to 3000). next binary lives in node_modules.
+CMD ["sh", "-c", "node_modules/.bin/next start -p ${PORT:-3000}"]

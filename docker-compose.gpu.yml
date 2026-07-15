@@ -1,0 +1,53 @@
+# Sentigon V2 GPU model-serving stack (Phase 2/4).
+# Requires the NVIDIA Container Toolkit. Enable with the "gpu" profile:
+#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml --profile gpu up -d
+#
+# On this 16 GB RTX 5080 dev box, run the perception detectors and Qwen3-VL-8B.
+# The full Qwen3-VL-32B tier targets a RunPod A100/H100 host (same service, the
+# REASON_MODEL/REASON_ENDPOINT env just points at the larger deployment).
+
+services:
+  triton:
+    image: nvcr.io/nvidia/tritonserver:25.01-py3
+    profiles: ["gpu"]
+    restart: unless-stopped
+    command: ["tritonserver", "--model-repository=/models", "--model-control-mode=explicit"]
+    volumes:
+      - ./models:/models:ro
+    ports:
+      - "8001:8001"   # gRPC
+      - "8002:8000"   # HTTP
+      - "8003:8002"   # metrics
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  vllm:
+    image: vllm/vllm-openai:latest
+    profiles: ["gpu"]
+    restart: unless-stopped
+    command:
+      - "--model=${REASON_MODEL:-Qwen/Qwen3-VL-8B-Instruct}"
+      - "--served-model-name=reason"
+      - "--max-model-len=32768"
+      - "--gpu-memory-utilization=0.85"
+    environment:
+      HUGGING_FACE_HUB_TOKEN: ${HF_TOKEN:-}
+    ports:
+      - "8050:8000"   # OpenAI-compatible API (matches REASON_ENDPOINT)
+    volumes:
+      - hfcache:/root/.cache/huggingface
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+volumes:
+  hfcache:

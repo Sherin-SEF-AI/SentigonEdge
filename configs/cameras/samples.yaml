@@ -1,0 +1,26 @@
+# Sample cameras seeded by `make seed`. The rtsp_uri values point at MediaMTX
+# paths that the Phase 1 ingest service publishes by restreaming on-box sample
+# videos, so the whole pipeline runs on real streams without physical hardware.
+# Replace with real ONVIF-discovered cameras in production.
+
+cameras:
+  - name: "Lobby Cam 01"
+    rtsp_uri: "rtsp://localhost:8554/cam_lobby"
+    zone: "Main Lobby"
+    fps: 15
+    resolution: "1280x720"
+  - name: "Dock Cam 02"
+    rtsp_uri: "rtsp://localhost:8554/cam_dock"
+    zone: "Loading Dock"
+    fps: 15
+    resolution: "1280x720"
+  - name: "Perimeter Cam 03"
+    rtsp_uri: "rtsp://localhost:8554/cam_perimeter"
+    zone: "North Perimeter"
+    fps: 15
+    resolution: "1280x720"
+  - name: "Parking Cam 04"
+    rtsp_uri: "rtsp://localhost:8554/cam_parking"
+    zone: "Parking Lot A"
+    fps: 15
+    resolution: "1280x720"

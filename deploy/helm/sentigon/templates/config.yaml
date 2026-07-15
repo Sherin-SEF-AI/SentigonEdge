@@ -1,0 +1,31 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-env
+  labels:
+    {{- include "sentigon.labels" . | nindent 4 }}
+data:
+  DATABASE_URL: {{ .Values.infra.databaseUrl | quote }}
+  REDIS_URL: {{ .Values.infra.redisUrl | quote }}
+  KAFKA_BOOTSTRAP_SERVERS: {{ .Values.infra.kafkaBootstrap | quote }}
+  QDRANT_URL: {{ .Values.infra.qdrantUrl | quote }}
+  MINIO_ENDPOINT: {{ .Values.infra.minioEndpoint | quote }}
+  MINIO_SECURE: {{ .Values.infra.minioSecure | quote }}
+  REASON_BACKEND: {{ .Values.reason.backend | quote }}
+  REASON_MODEL: {{ .Values.reason.model | quote }}
+  REASON_ENDPOINT: {{ .Values.reason.endpoint | quote }}
+  DEFAULT_ADMIN_EMAIL: {{ .Values.secrets.adminEmail | quote }}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ .Release.Name }}-secrets
+  labels:
+    {{- include "sentigon.labels" . | nindent 4 }}
+type: Opaque
+stringData:
+  JWT_SECRET_KEY: {{ .Values.secrets.jwtSecret | quote }}
+  SERVICE_TOKEN: {{ .Values.secrets.serviceToken | quote }}
+  MINIO_ACCESS_KEY: {{ .Values.secrets.minioAccessKey | quote }}
+  MINIO_SECRET_KEY: {{ .Values.secrets.minioSecretKey | quote }}
+  DEFAULT_ADMIN_PASSWORD: {{ .Values.secrets.adminPassword | quote }}

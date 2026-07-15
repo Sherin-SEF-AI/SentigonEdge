@@ -1,0 +1,47 @@
+# RunPod A100/H100 overrides: layer on top of values.yaml.
+#   helm install sentigon deploy/helm/sentigon \
+#     -f deploy/helm/sentigon/values-runpod.yaml \
+#     --set secrets.adminPassword=... --set vllm.hfToken=...
+#
+# Assumes GPU nodes are labeled and (usually) tainted; adjust the selector/toleration
+# to match your RunPod pool. Data services are expected to be managed/external.
+
+image:
+  repository: registry.example.com/sentigon/sentigon
+  tag: "0.1.0"
+
+perception:
+  image:
+    repository: registry.example.com/sentigon/sentigon-gpu
+    tag: "0.1.0"
+  nodeSelector:
+    nvidia.com/gpu.product: NVIDIA-A100-SXM4-80GB
+  tolerations:
+    - key: nvidia.com/gpu
+      operator: Exists
+      effect: NoSchedule
+
+# Full 32B reasoning tier on a dedicated GPU.
+vllm:
+  enabled: true
+  model: "Qwen/Qwen3-VL-32B-Instruct"
+  maxModelLen: 32768
+  gpuMemoryUtilization: "0.92"
+  gpu: 1
+  nodeSelector:
+    nvidia.com/gpu.product: NVIDIA-A100-SXM4-80GB
+  tolerations:
+    - key: nvidia.com/gpu
+      operator: Exists
+      effect: NoSchedule
+
+web:
+  image:
+    repository: registry.example.com/sentigon/sentigon-web
+    tag: "0.1.0"
+
+ingress:
+  enabled: true
+  className: nginx
+  host: sentigon.example.com
+  tls: true

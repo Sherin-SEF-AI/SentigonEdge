@@ -1,0 +1,53 @@
+# MediaMTX relay config for Sentigon V2.
+# Provides RTSP (internal restream + pull), HLS, and WebRTC (WHEP low-latency
+# browser playback), plus the control API used by the ingest service to publish
+# and query paths. Paths are open (catch-all) so ingest can create them at runtime.
+
+logLevel: info
+logDestinations: [stdout]
+
+# Dev auth: allow all actions from any source. Through Docker port-forwarding the
+# container sees requests from the bridge gateway, not 127.0.0.1, so the default
+# localhost-only rule for the api/metrics actions would 401 the ingest service and
+# host tooling. Lock this down (per-user creds, IP allowlists) for any real deploy.
+authInternalUsers:
+  - user: any
+    pass:
+    permissions:
+      - action: publish
+      - action: read
+      - action: playback
+      - action: api
+      - action: metrics
+      - action: pprof
+
+# Control API (ingest service manages paths through this).
+api: yes
+apiAddress: :9997
+
+# Metrics for observability (Phase 6 Prometheus scrape).
+metrics: yes
+metricsAddress: :9998
+
+# RTSP server: internal restream target and pull source for perception.
+rtsp: yes
+rtspAddress: :8554
+rtspTransports: [tcp]
+
+# HLS: fallback browser playback.
+hls: yes
+hlsAddress: :8888
+hlsAlwaysRemux: yes
+hlsVariant: lowLatency
+
+# WebRTC: primary low-latency browser playback (WHEP read, WHIP publish).
+webrtc: yes
+webrtcAddress: :8889
+webrtcLocalUDPAddress: :8189
+# On a single-host dev box the local candidate is sufficient. Add public IPs or a
+# STUN/TURN server here for multi-host or RunPod deployments.
+webrtcAdditionalHosts: [127.0.0.1]
+
+# Catch-all path: ingest publishes cam_<uuid> streams dynamically.
+paths:
+  all_others:

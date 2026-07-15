@@ -1,0 +1,24 @@
+# Sentigon gold set. Each clip is a labeled ground-truth sample used to measure a
+# signature's precision/recall/false-alarm rate. No signature ships without an entry
+# here. Populate as real labeled clips are captured (Phase 3+).
+#
+# clip fields:
+#   id          unique clip id
+#   path        clip location (relative to bench/gold_set/)
+#   camera      source camera name
+#   label       positive | negative
+#   signatures  ground-truth signatures present in the clip (empty for negatives)
+#   predictions optional precomputed predictions (until the live pipeline scores it)
+
+gold_set: default
+clips: []
+  # - id: gs_001
+  #   path: clips/lobby_tailgate_01.mp4
+  #   camera: "Lobby Cam 01"
+  #   label: positive
+  #   signatures: ["Tailgating"]
+  # - id: gs_002
+  #   path: clips/lobby_normal_01.mp4
+  #   camera: "Lobby Cam 01"
+  #   label: negative
+  #   signatures: []

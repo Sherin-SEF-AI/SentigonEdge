@@ -1,0 +1,68 @@
+# ---- Secrets / local config ----
+.env
+.env.*
+!.env.example
+.runpod.env
+*.local
+
+# ---- Python ----
+.venv/
+.uv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.ipynb_checkpoints/
+
+# ---- Node / web console ----
+node_modules/
+web/node_modules/
+web/.next/
+web/out/
+web/dist/
+.turbo/
+
+# ---- Model weights & exported engines (fetched, never committed) ----
+*.pt
+*.pth
+*.onnx
+*.engine
+*.plan
+*.safetensors
+models/**/1/*.onnx
+models/**/1/*.plan
+
+# ---- Media, datasets, generated artifacts (docs/images is tracked) ----
+media/
+datasets/
+tools/
+backups/
+runs/
+data/
+recordings/
+clips/
+snapshots/
+*.mp4
+*.avi
+*.mkv
+*.mov
+*.wav
+
+# ---- Runtime / logs / caches ----
+*.log
+logs/
+.cache/
+.hf_home/
+minio-data/
+pgdata/
+qdrant-storage/
+
+# ---- OS / editor ----
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/

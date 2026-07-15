@@ -1,0 +1,67 @@
+{
+  "method": "vlm-adjudicated",
+  "signatures_evaluated": 5,
+  "micro_precision_proxy": 0.373,
+  "per_signature": [
+    {
+      "signature": "Loitering",
+      "severity": "medium",
+      "fired": 5674,
+      "confirmed": 2674,
+      "rejected": 2005,
+      "adjudicated": 4679,
+      "precision_proxy": 0.5715,
+      "false_alarm_rate": 0.4285
+    },
+    {
+      "signature": "Unauthorized Entry",
+      "severity": "critical",
+      "fired": 4542,
+      "confirmed": 666,
+      "rejected": 3074,
+      "adjudicated": 3740,
+      "precision_proxy": 0.1781,
+      "false_alarm_rate": 0.8219
+    },
+    {
+      "signature": "Tailgating",
+      "severity": "high",
+      "fired": 682,
+      "confirmed": 0,
+      "rejected": 560,
+      "adjudicated": 560,
+      "precision_proxy": 0.0,
+      "false_alarm_rate": 1.0
+    },
+    {
+      "signature": "Crowd Formation",
+      "severity": "medium",
+      "fired": 30,
+      "confirmed": 10,
+      "rejected": 20,
+      "adjudicated": 30,
+      "precision_proxy": 0.3333,
+      "false_alarm_rate": 0.6667
+    },
+    {
+      "signature": "Occupancy Exceeded",
+      "severity": "high",
+      "fired": 20,
+      "confirmed": 18,
+      "rejected": 2,
+      "adjudicated": 20,
+      "precision_proxy": 0.9,
+      "false_alarm_rate": 0.1
+    },
+    {
+      "signature": "Suspicious Package",
+      "severity": "high",
+      "fired": 1,
+      "confirmed": 0,
+      "rejected": 0,
+      "adjudicated": 0,
+      "precision_proxy": null,
+      "false_alarm_rate": null
+    }
+  ]
+}

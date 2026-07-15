@@ -1,0 +1,30 @@
+# nvdsanalytics: ROI (zone) membership, line crossing, and overcrowding.
+# ROI polygons here are placeholders; at deploy time the Context service pushes the
+# per-camera zone polygons (from the DB, the same ones the console overlay draws).
+[property]
+enable=1
+config-width=1280
+config-height=720
+osd-mode=0
+display-font-size=12
+
+# Example zone (restricted area) on source 0. roi-<Name> = x0;y0;x1;y1;...
+[roi-filtering-stream-0]
+enable=1
+roi-RestrictedZone=384;324;896;324;1152;700;128;700
+inverse-roi=0
+class-id=-1
+
+# Example tripwire / line crossing on source 0.
+[line-crossing-stream-0]
+enable=1
+line-crossing-Entry=768;300;768;700;600;500;900;500
+class-id=-1
+extended=0
+mode=loose
+
+# Overcrowding per zone.
+[overcrowding-stream-0]
+enable=1
+roi-OC=384;324;896;324;1152;700;128;700
+object-threshold=12

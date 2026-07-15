@@ -1,0 +1,55 @@
+# SOP response playbooks: when an incident matches, run the actions automatically.
+# Match is evaluated against the live incident (risk_score, severity, signature
+# category/name, verdict). Actions are REAL: email -> mailpit SMTP, webhook -> the
+# configured receiver, create_case -> a real Case linked to the incident, escalate
+# -> the incident status. First-match-wins per incident so an event runs one SOP.
+
+playbooks:
+  - name: P1 Critical Response
+    description: Any threat scoring P1 (>=80) gets an immediate case, escalation, browser push, and notify.
+    match:
+      min_risk_score: 80
+    actions:
+      escalate: true
+      create_case: true
+      investigate: true
+      email: true
+      webhook: true
+      webpush: true
+
+  - name: Weapon / Violence Immediate Dispatch
+    description: Life-safety categories dispatch regardless of score.
+    match:
+      categories: [active_shooter, violence, terrorism, child_safety]
+    actions:
+      escalate: true
+      create_case: true
+      email: true
+      webhook: true
+      webpush: true
+
+  - name: Watchlist Hit Alert
+    description: A BOLO appearance or plate match notifies the SOC and opens a case.
+    match:
+      signatures: [Watchlist Hit, Plate Watchlist Hit]
+    actions:
+      create_case: true
+      email: true
+      webhook: true
+
+  - name: Anomaly Review
+    description: Learned-baseline anomalies are webhooked for review.
+    match:
+      signatures: [Anomalous Activity]
+    actions:
+      webhook: true
+      email: true
+
+  - name: Perimeter Intrusion Response
+    match:
+      categories: [intrusion]
+      min_risk_score: 60
+    actions:
+      escalate: true
+      email: true
+      webhook: true

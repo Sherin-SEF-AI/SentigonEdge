@@ -1,0 +1,34 @@
+%YAML:1.0
+# NvDCF tracker (persistent IDs, ReID-capable). BoT-SORT is available by swapping
+# the state estimator + enabling the ReID sub-config; NvDCF is the low-latency default.
+BaseConfig:
+  minDetectorConfidence: 0.30
+
+TargetManagement:
+  enableBboxUnClipping: 1
+  maxTargetsPerStream: 200
+  minIouDiff4NewTarget: 0.4
+  minTrackerConfidence: 0.30
+  probationAge: 3
+  maxShadowTrackingAge: 30
+  earlyTerminationAge: 1
+
+TrajectoryManagement:
+  useUniqueID: 1
+
+DataAssociator:
+  dataAssociatorType: 0
+  associationMatcherType: 1
+  checkClassMatch: 1
+  minMatchingScore4Overall: 0.0
+  minMatchingScore4SizeSimilarity: 0.6
+  minMatchingScore4Iou: 0.0
+
+StateEstimator:
+  stateEstimatorType: 1
+
+VisualTracker:
+  visualTrackerType: 1
+  useColorNames: 1
+  useHog: 1
+  featureImgSizeLevel: 3

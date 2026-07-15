@@ -1,0 +1,138 @@
+"""API-facing entity schemas (pydantic v2). `from_attributes` lets these validate
+directly off ORM instances.
+"""
+
+from __future__ import annotations
+
+import uuid
+from datetime import datetime
+
+from pydantic import BaseModel, ConfigDict, Field
+
+from .enums import (
+    CameraStatus,
+    CaseStatus,
+    DetectionMethod,
+    IncidentStatus,
+    Severity,
+    UserRole,
+    Verdict,
+    ZoneType,
+)
+
+
+class ORMModel(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+
+class SiteOut(ORMModel):
+    id: uuid.UUID
+    name: str
+    address: str | None = None
+    timezone: str = "UTC"
+    center: dict | None = None
+    created_at: datetime
+
+
+class ZoneOut(ORMModel):
+    id: uuid.UUID
+    site_id: uuid.UUID
+    building_id: uuid.UUID | None = None
+    camera_id: uuid.UUID | None = None
+    name: str
+    zone_type: ZoneType
+    polygon_image: dict | None = None
+    polygon_map: dict | None = None
+    max_occupancy: int | None = None
+    is_active: bool = True
+
+
+class CameraCreate(BaseModel):
+    name: str
+    rtsp_uri: str
+    onvif_uri: str | None = None
+    site_id: uuid.UUID | None = None
+    fps: int = 15
+    resolution: str | None = None
+    ptz_capable: bool = False
+    meta: dict = Field(default_factory=dict)
+
+
+class CameraOut(ORMModel):
+    id: uuid.UUID
+    site_id: uuid.UUID | None = None
+    name: str
+    rtsp_uri: str
+    onvif_uri: str | None = None
+    codec: str | None = None
+    resolution: str | None = None
+    fps: int
+    ptz_capable: bool
+    status: CameraStatus
+    health: dict | None = None
+    last_seen: datetime | None = None
+    is_active: bool
+
+
+class SignatureOut(ORMModel):
+    id: uuid.UUID
+    name: str
+    category: str
+    description: str | None = None
+    severity: Severity
+    detection_method: DetectionMethod
+    params: dict | None = None
+    cooldown_seconds: int
+    enabled: bool
+    source: str
+    version: int
+    detection_count: int
+
+
+class EventOut(ORMModel):
+    id: uuid.UUID
+    seq: int
+    signature_id: uuid.UUID | None = None
+    camera_id: uuid.UUID
+    zone_id: uuid.UUID | None = None
+    event_type: str
+    ts: datetime
+    severity: Severity
+    confidence: float
+    snapshot_ref: str | None = None
+    clip_ref: str | None = None
+
+
+class IncidentOut(ORMModel):
+    id: uuid.UUID
+    seq: int
+    camera_id: uuid.UUID
+    zone_id: uuid.UUID | None = None
+    title: str
+    severity: Severity
+    status: IncidentStatus
+    verdict: Verdict | None = None
+    confidence: float
+    sitrep: str | None = None
+    snapshot_ref: str | None = None
+    clip_ref: str | None = None
+    created_at: datetime
+    acknowledged_at: datetime | None = None
+    resolved_at: datetime | None = None
+
+
+class CaseOut(ORMModel):
+    id: uuid.UUID
+    title: str
+    description: str | None = None
+    status: CaseStatus
+    priority: Severity
+    created_at: datetime
+
+
+class UserOut(ORMModel):
+    id: uuid.UUID
+    email: str
+    full_name: str
+    role: UserRole
+    is_active: bool

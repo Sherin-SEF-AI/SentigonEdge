@@ -1,0 +1,35 @@
+# Promtail tails the host services' log files (/tmp/sentigon-<svc>.log, bind-mounted
+# read-only at /host-logs), labels each line by service, and parses the structlog
+# JSON so `level`, `event`, and `correlation_id` are queryable in Grafana/Loki.
+server:
+  http_listen_port: 9080
+  grpc_listen_port: 0
+
+positions:
+  filename: /tmp/positions.yaml
+
+clients:
+  - url: http://loki:3100/loki/api/v1/push
+
+scrape_configs:
+  - job_name: sentigon-host-services
+    static_configs:
+      - targets: [localhost]
+        labels:
+          job: sentigon
+          __path__: /host-logs/sentigon-*.log
+    pipeline_stages:
+      # service label from the filename (sentigon-<service>.log)
+      - regex:
+          source: filename
+          expression: 'sentigon-(?P<service>[a-z]+)\.log'
+      - labels:
+          service:
+      # structlog JSON lines: lift level + event to labels/fields (non-JSON lines pass through)
+      - json:
+          expressions:
+            level: level
+            event: event
+            correlation_id: correlation_id
+      - labels:
+          level:

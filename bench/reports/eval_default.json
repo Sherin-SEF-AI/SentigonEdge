@@ -1,0 +1,14 @@
+{
+  "gold_set": "default",
+  "total_clips": 0,
+  "notes": "empty gold set: add clips to bench/gold_set/ to measure signatures",
+  "aggregate": {
+    "tp": 0,
+    "fp": 0,
+    "fn": 0,
+    "micro_precision": 0.0,
+    "micro_recall": 0.0,
+    "micro_false_alarm_rate": 0.0
+  },
+  "per_signature": {}
+}

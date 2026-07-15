@@ -1,0 +1,76 @@
+{{- if .Values.perception.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-perception
+  labels:
+    app.kubernetes.io/name: {{ .Release.Name }}-perception
+    app.kubernetes.io/component: perception
+    {{- include "sentigon.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.perception.replicas }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ .Release.Name }}-perception
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ .Release.Name }}-perception
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.perception.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.perception.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: perception
+          image: "{{ .Values.perception.image.repository }}:{{ .Values.perception.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["python", "-m", "{{ .Values.perception.module }}"]
+          ports:
+            - name: http
+              containerPort: {{ .Values.perception.port }}
+          env:
+            - name: PERCEPTION_HTTP_PORT
+              value: {{ .Values.perception.port | quote }}
+          envFrom:
+            {{- include "sentigon.envFrom" . | nindent 12 }}
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 15
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 60
+            periodSeconds: 30
+          resources:
+            limits:
+              {{- toYaml .Values.perception.resources.limits | nindent 14 }}
+              nvidia.com/gpu: {{ .Values.perception.gpu }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-perception
+  labels:
+    app.kubernetes.io/name: {{ .Release.Name }}-perception
+    {{- include "sentigon.labels" . | nindent 4 }}
+spec:
+  selector:
+    app.kubernetes.io/name: {{ .Release.Name }}-perception
+  ports:
+    - name: http
+      port: {{ .Values.perception.port }}
+      targetPort: http
+{{- end }}

@@ -1,0 +1,203 @@
+# Sentigon V2 local infrastructure stack (CPU only).
+# GPU services (Triton, vLLM) live in docker-compose.gpu.yml behind a profile and
+# require the NVIDIA Container Toolkit. Host ports are chosen to avoid collisions
+# with other stacks already running on this box.
+#
+#   make up      bring the stack up and wait until healthy
+#   make down    stop it
+#   make ps      status
+#   make logs    tail logs
+
+name: sentigon
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-sentigon}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-sentigon_secret}
+      POSTGRES_DB: ${POSTGRES_DB:-sentigon}
+    ports:
+      - "5433:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-sentigon} -d ${POSTGRES_DB:-sentigon}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    ports:
+      - "6380:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redpanda:
+    image: redpandadata/redpanda:latest
+    restart: unless-stopped
+    command:
+      - redpanda
+      - start
+      - --mode=dev-container
+      - --smp=1
+      - --overprovisioned
+      - --node-id=0
+      - --kafka-addr=internal://0.0.0.0:9092,external://0.0.0.0:19093
+      - --advertise-kafka-addr=internal://redpanda:9092,external://localhost:19093
+      - --rpc-addr=redpanda:33145
+      - --advertise-rpc-addr=redpanda:33145
+      - --default-log-level=warn
+    ports:
+      - "19093:19093"
+    volumes:
+      - redpandadata:/var/lib/redpanda/data
+    healthcheck:
+      test: ["CMD-SHELL", "rpk cluster health -X admin.hosts=localhost:9644 | grep -q 'Healthy:.*true'"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  redpanda-console:
+    image: redpandadata/console:latest
+    restart: unless-stopped
+    depends_on:
+      redpanda:
+        condition: service_healthy
+    environment:
+      KAFKA_BROKERS: redpanda:9092
+    ports:
+      - "8085:8080"
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    restart: unless-stopped
+    environment:
+      QDRANT__SERVICE__GRPC_PORT: 6334
+    ports:
+      - "6335:6333"
+      - "6336:6334"
+    volumes:
+      - qdrantdata:/qdrant/storage
+
+  minio:
+    image: minio/minio:latest
+    restart: unless-stopped
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-sentigon}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:-sentigon_secret}
+    ports:
+      - "9002:9000"
+      - "9003:9001"
+    volumes:
+      - miniodata:/data
+
+  # Real SMTP server + web inbox for notification delivery (self-hosted).
+  mailpit:
+    image: axllent/mailpit:latest
+    restart: unless-stopped
+    ports:
+      - "1025:1025"   # SMTP
+      - "8025:8025"   # web inbox + API
+    environment:
+      MP_SMTP_AUTH_ACCEPT_ANY: "true"
+      MP_SMTP_AUTH_ALLOW_INSECURE: "true"
+
+  # Real webhook receiver that logs every POST (notification destination).
+  webhook-sink:
+    image: mendhak/http-https-echo:latest
+    restart: unless-stopped
+    environment:
+      HTTP_PORT: "8080"
+    ports:
+      - "8028:8080"
+
+  mediamtx:
+    image: bluenviron/mediamtx:latest
+    restart: unless-stopped
+    volumes:
+      - ./infra/mediamtx.yml:/mediamtx.yml:ro
+    ports:
+      - "8554:8554"     # RTSP
+      - "8888:8888"     # HLS
+      - "8889:8889"     # WebRTC (WHEP/WHIP over HTTP)
+      - "8189:8189/udp" # WebRTC ICE UDP
+      - "9997:9997"     # control API
+
+  # Observability: Prometheus scrapes service /metrics, Grafana visualizes.
+  prometheus:
+    image: prom/prometheus:latest
+    restart: unless-stopped
+    command: ["--config.file=/etc/prometheus/prometheus.yml"]
+    volumes:
+      - ./infra/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - promdata:/prometheus
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "9090:9090"
+
+  loki:
+    image: grafana/loki:2.9.8
+    restart: unless-stopped
+    command: ["-config.file=/etc/loki/config.yml"]
+    volumes:
+      - ./infra/loki-config.yml:/etc/loki/config.yml:ro
+      - lokidata:/loki
+    ports:
+      - "3100:3100"
+
+  promtail:
+    image: grafana/promtail:2.9.8
+    restart: unless-stopped
+    depends_on: [loki]
+    command: ["-config.file=/etc/promtail/config.yml"]
+    volumes:
+      - ./infra/promtail-config.yml:/etc/promtail/config.yml:ro
+      - /tmp:/host-logs:ro
+
+  grafana:
+    image: grafana/grafana:latest
+    restart: unless-stopped
+    depends_on: [prometheus, loki]
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: sentigon
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_USERS_DEFAULT_THEME: dark
+    volumes:
+      - ./infra/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./infra/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafanadata:/var/lib/grafana
+    ports:
+      - "3002:3000"
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.0
+    restart: unless-stopped
+    command: ["start-dev", "--import-realm", "--http-port=8083"]
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: admin
+      KC_HEALTH_ENABLED: "true"
+    volumes:
+      - ./infra/keycloak:/opt/keycloak/data/import:ro
+    ports:
+      - "8083:8083"
+
+volumes:
+  pgdata:
+  redpandadata:
+  qdrantdata:
+  miniodata:
+  promdata:
+  grafanadata:
+  lokidata:

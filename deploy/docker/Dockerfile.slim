@@ -1,0 +1,36 @@
+# Slim CPU-only image for the non-ML services (api, ingest, context, notify,
+# mediasource, mcp, governance). Excludes torch/CUDA entirely, so it is a fraction
+# of the full image's size. Perception and search still need the full GPU image.
+# Tag: sentigon-slim:<v>. Chosen per Deployment via `python -m sentigon_<svc>`.
+FROM python:3.11-slim AS base
+
+ENV PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1 UV_LINK_MODE=copy
+
+RUN apt-get update && apt-get install -y --no-install-recommends curl \
+    && rm -rf /var/lib/apt/lists/*
+RUN pip install --no-cache-dir uv
+
+RUN useradd --create-home --uid 10001 sentigon && mkdir -p /app && chown sentigon:sentigon /app
+WORKDIR /app
+
+COPY --chown=sentigon:sentigon pyproject.toml uv.lock alembic.ini ./
+COPY --chown=sentigon:sentigon migrations ./migrations
+COPY --chown=sentigon:sentigon services ./services
+COPY --chown=sentigon:sentigon configs ./configs
+COPY --chown=sentigon:sentigon tools ./tools
+
+USER sentigon
+# Resolve only the CPU services' dependency closure (torch-free), then install
+# the local workspace packages without pulling their transitive extras again.
+RUN uv venv /app/.venv \
+ && VIRTUAL_ENV=/app/.venv uv export \
+      --package sentigon-api --package sentigon-ingest --package sentigon-context \
+      --package sentigon-notify --package sentigon-mediasource --package sentigon-mcp \
+      --package sentigon-governance --no-dev --no-hashes --no-emit-workspace -o /tmp/req.txt \
+ && VIRTUAL_ENV=/app/.venv uv pip install -r /tmp/req.txt \
+ && VIRTUAL_ENV=/app/.venv uv pip install --no-deps \
+      ./services/common ./services/api ./services/ingest ./services/context \
+      ./services/notify ./services/mediasource ./services/mcp ./services/governance
+
+ENV PATH="/app/.venv/bin:$PATH"
+CMD ["python", "-m", "sentigon_api"]

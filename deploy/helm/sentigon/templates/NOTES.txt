@@ -1,0 +1,29 @@
+Sentigon V2 ({{ .Chart.AppVersion }}) deployed as release "{{ .Release.Name }}" in namespace "{{ .Release.Namespace }}".
+
+Services:
+{{- range $name, $svc := .Values.services }}
+  - {{ $.Release.Name }}-{{ $name }}  (:{{ $svc.port }}, x{{ $svc.replicas }})
+{{- end }}
+{{- if .Values.perception.enabled }}
+  - {{ .Release.Name }}-perception  (GPU x{{ .Values.perception.gpu }})
+{{- end }}
+{{- if .Values.vllm.enabled }}
+  - {{ .Release.Name }}-vllm  (GPU x{{ .Values.vllm.gpu }}, model {{ .Values.vllm.model }})
+{{- end }}
+{{- if .Values.web.enabled }}
+  - {{ .Release.Name }}-web  (console :{{ .Values.web.port }})
+{{- end }}
+
+The post-install Job "{{ .Release.Name }}-migrate" runs "alembic upgrade head" then seeds
+the governed ontology + signature defaults + the single admin credential (config only).
+
+Open the console:
+{{- if .Values.ingress.enabled }}
+  http://{{ .Values.ingress.host }}/
+{{- else }}
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ .Release.Name }}-web {{ .Values.web.port }}:{{ .Values.web.port }}
+  then browse http://localhost:{{ .Values.web.port }}
+{{- end }}
+
+Set real secrets before exposing this (never ship the defaults):
+  --set secrets.jwtSecret=... --set secrets.serviceToken=... --set secrets.adminPassword=...

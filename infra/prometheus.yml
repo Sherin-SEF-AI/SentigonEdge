@@ -1,0 +1,19 @@
+global:
+  scrape_interval: 15s
+
+scrape_configs:
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  # Sentigon services run on the host (uv). Reach them via the docker host gateway.
+  - job_name: sentigon-api
+    static_configs:
+      - targets: ["host.docker.internal:8010"]
+        labels: { service: api }
+
+  # MediaMTX exposes its own Prometheus metrics inside the compose network.
+  - job_name: mediamtx
+    static_configs:
+      - targets: ["mediamtx:9998"]
+        labels: { service: mediamtx }

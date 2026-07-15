@@ -1,0 +1,97 @@
+# Sentigon V2 monorepo root (uv virtual workspace).
+# The root is not a package; it wires the workspace members and dev tooling.
+# Python is pinned to 3.11: DeepStream/Triton client, torch, and ultralytics
+# wheels target 3.11, and the system interpreter here is 3.14.
+
+[project]
+name = "sentigon"
+version = "0.1.0"
+description = "Sentigon V2: AI physical-security intelligence platform"
+requires-python = ">=3.11,<3.13"
+dependencies = [
+    "sentigon-common",
+    "sentigon-governance",
+    "sentigon-ingest",
+    "sentigon-perception",
+    "sentigon-context",
+    "sentigon-api",
+    "sentigon-mediasource",
+    "sentigon-reason",
+    "sentigon-notify",
+    "sentigon-search",
+    "sentigon-mcp",
+]
+
+[tool.uv]
+package = false
+
+[tool.uv.workspace]
+members = [
+    "services/common",
+    "services/governance",
+    "services/ingest",
+    "services/perception",
+    "services/context",
+    "services/api",
+    "services/mediasource",
+    "services/reason",
+    "services/notify",
+    "services/search",
+    "services/mcp",
+]
+
+[tool.uv.sources]
+sentigon-common = { workspace = true }
+sentigon-governance = { workspace = true }
+sentigon-ingest = { workspace = true }
+sentigon-perception = { workspace = true }
+sentigon-context = { workspace = true }
+sentigon-api = { workspace = true }
+sentigon-mediasource = { workspace = true }
+sentigon-reason = { workspace = true }
+sentigon-notify = { workspace = true }
+sentigon-search = { workspace = true }
+sentigon-mcp = { workspace = true }
+# Blackwell (RTX 5080, sm_120) needs CUDA 12.8 wheels; pin torch to that index.
+torch = { index = "pytorch-cu128" }
+torchvision = { index = "pytorch-cu128" }
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
+[dependency-groups]
+dev = [
+    "ruff>=0.6.0",
+    "black>=24.8.0",
+    "mypy>=1.11.0",
+    "pytest>=8.3.0",
+    "pytest-asyncio>=0.24.0",
+    "types-PyYAML>=6.0.12",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+extend-exclude = [".venv", "web", "migrations/versions", "services/perception/deepstream"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "C4", "SIM"]
+# UP042: str-mixin enums are intentional (clean SQLAlchemy Enum column mapping).
+ignore = ["E501", "B008", "UP042"]
+
+[tool.black]
+line-length = 100
+target-version = ["py311"]
+extend-exclude = "migrations/versions"
+
+[tool.mypy]
+python_version = "3.11"
+warn_unused_ignores = true
+ignore_missing_imports = true
+plugins = ["pydantic.mypy"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

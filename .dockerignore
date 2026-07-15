@@ -1,0 +1,10 @@
+**/node_modules
+**/.next
+**/__pycache__
+.venv
+datasets
+models/*.pt
+*.pt
+.git
+bench/reports
+.runpod.env

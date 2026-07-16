@@ -72,7 +72,7 @@ class PerceptionSettings(BaseSettings):
     fall_cooldown_s: float = 30.0
 
     anpr_min_votes: int = 3  # min accumulated vote weight before a plate is emitted
-    anpr_store_raw: bool = True  # DPDP: False publishes only the salted hash, never raw text
+    anpr_store_raw: bool = False  # DPDP: default off — publish only the HMAC hash, never raw text
     # (plate hashing salt lives in sentigon_common.config so api + perception share it)
     # person + vehicle appearance ReID (vehicle re-identification is first-class)
     embed_classes: list[str] = ["person", "car", "truck", "bus", "motorcycle", "bicycle"]

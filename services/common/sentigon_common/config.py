@@ -9,9 +9,30 @@ from __future__ import annotations
 from functools import lru_cache
 from pathlib import Path
 
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
+
+# Known placeholder/default secrets that must never be used outside dev. The JWT
+# startup guard in the API only checked length (<16), so "change-me-in-production"
+# (23 chars) slipped through; this catches those by value across every service.
+_PLACEHOLDER_SECRETS = {
+    "",
+    "changeme",
+    "change-me",
+    "change-me-in-production",
+    "dev_service_token_change_me",
+    "change-me-ack-secret",
+    "changeme123",
+    "sentigon_secret",
+    "sentigon123",
+    "minioadmin",
+    "secret",
+    "password",
+    "admin",
+}
+_DEV_ENVS = {"dev", "development", "local", "test", "ci"}
 
 
 class Settings(BaseSettings):
@@ -46,6 +67,10 @@ class Settings(BaseSettings):
 
     # MinIO / S3
     minio_endpoint: str = "localhost:9002"
+    # Public/browser-facing MinIO host used ONLY to sign presigned URLs. Empty = use
+    # minio_endpoint. Presigned signatures are host-bound, so a URL signed for an
+    # internal host (e.g. "minio:9000") is unreachable from the operator's browser.
+    minio_public_endpoint: str = ""
     minio_access_key: str = "sentigon"
     minio_secret_key: str = "sentigon_secret"
     minio_secure: bool = False
@@ -60,6 +85,10 @@ class Settings(BaseSettings):
     mediamtx_webrtc: str = "http://localhost:8889"
     mediamtx_hls: str = "http://localhost:8888"
 
+    # peer service URLs (co-located on the box; override per deployment topology)
+    ingest_url: str = "http://localhost:8020"
+    mediasource_url: str = "http://localhost:8055"
+
     # Auth
     jwt_secret_key: str = ""
     jwt_algorithm: str = "HS256"
@@ -71,6 +100,12 @@ class Settings(BaseSettings):
     default_admin_password: str = ""
     # shared secret for internal service-to-service writes (X-Service-Token)
     service_token: str = "dev_service_token_change_me"
+    # CORS allowlist for the browser console (comma-separated origins). Never "*"
+    # outside dev — reads are authenticated but an allowlist is defence in depth.
+    cors_allow_origins: str = "http://localhost:3000,http://localhost:3002"
+    # bind address for service HTTP servers. Default localhost: internal services
+    # must not be reachable from the LAN. Front them with an authenticated proxy.
+    service_bind_host: str = "127.0.0.1"
     # salt for hashing number plates (personal data): the same salt must be used by
     # the reader (perception) and the enroller (api) so hashes match. Override in prod.
     anpr_salt: str = "sentigon-anpr"
@@ -89,6 +124,10 @@ class Settings(BaseSettings):
     triton_url: str = "localhost:8001"
 
     @property
+    def cors_origin_list(self) -> list[str]:
+        return [o.strip() for o in self.cors_allow_origins.split(",") if o.strip()]
+
+    @property
     def all_buckets(self) -> list[str]:
         return [
             self.minio_bucket_recordings,
@@ -96,6 +135,28 @@ class Settings(BaseSettings):
             self.minio_bucket_snapshots,
             self.minio_bucket_evidence,
         ]
+
+    @model_validator(mode="after")
+    def _reject_default_secrets_in_production(self) -> Settings:
+        """Fail fast (in every service, not just the API) when deployed outside dev
+        with placeholder/weak secrets. No-op for the dev defaults."""
+        if self.app_env.strip().lower() in _DEV_ENVS:
+            return self
+        weak: list[str] = []
+        if self.jwt_secret_key.strip().lower() in _PLACEHOLDER_SECRETS or len(self.jwt_secret_key) < 32:
+            weak.append("JWT_SECRET_KEY (needs >=32 non-default chars)")
+        if self.service_token.strip().lower() in _PLACEHOLDER_SECRETS or len(self.service_token) < 16:
+            weak.append("SERVICE_TOKEN (needs >=16 non-default chars)")
+        if self.minio_secret_key.strip().lower() in _PLACEHOLDER_SECRETS:
+            weak.append("MINIO_SECRET_KEY")
+        if self.anpr_salt.strip().lower() in _PLACEHOLDER_SECRETS | {"sentigon-anpr"}:
+            weak.append("ANPR_SALT (plate-hash HMAC key must be secret)")
+        if weak:
+            raise ValueError(
+                f"Refusing to start with app_env={self.app_env!r} and weak/default secrets: "
+                f"{', '.join(weak)}. Set strong values in the environment."
+            )
+        return self
 
 
 @lru_cache

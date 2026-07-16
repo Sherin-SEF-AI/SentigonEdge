@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import uuid
 from datetime import UTC, datetime
+from zoneinfo import ZoneInfo
 
 from sentigon_common.db import async_session_factory
 from sentigon_common.db.models import (
@@ -21,8 +22,14 @@ from sentigon_common.db.models import (
 )
 from sentigon_common.logging import get_logger, set_correlation_id
 from sentigon_common.schemas.enums import DispatchState, Severity
-from sentigon_notify.notifier import send_email, send_webhook, send_webpush, severity_meets
-from sqlalchemy import or_, select
+from sentigon_notify.notifier import (
+    send_email,
+    send_sms,
+    send_webhook,
+    send_webpush,
+    severity_meets,
+)
+from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .config import settings
@@ -149,7 +156,13 @@ class DispatchEngine:
         """Resolve the on-call responder for a site at the current local time and
         tier. Site-specific shifts win over global (site_id NULL) shifts. Windows are
         [start_hour, end_hour); a NULL weekday matches every day."""
-        now = datetime.now()
+        # site-local time (naive server-local wall clock resolved the wrong window on
+        # non-UTC boxes); windows are authored in this tz.
+        try:
+            tz = ZoneInfo(settings.dispatch_timezone)
+        except Exception:  # noqa: BLE001
+            tz = ZoneInfo("UTC")
+        now = datetime.now(tz)
         hour = now.hour
         wd = now.weekday()
         stmt = (
@@ -160,8 +173,15 @@ class DispatchEngine:
                 Responder.active.is_(True),
                 OncallShift.tier == tier,
                 or_(OncallShift.site_id == site_id, OncallShift.site_id.is_(None)),
-                OncallShift.start_hour <= hour,
-                OncallShift.end_hour > hour,
+                # same-day window [start,end); OR an overnight window (start>end) that
+                # wraps midnight (e.g. 22->06) — the old start<=hour<end never matched.
+                or_(
+                    and_(OncallShift.start_hour <= hour, OncallShift.end_hour > hour),
+                    and_(
+                        OncallShift.start_hour > OncallShift.end_hour,
+                        or_(OncallShift.start_hour <= hour, OncallShift.end_hour > hour),
+                    ),
+                ),
                 or_(OncallShift.weekday == wd, OncallShift.weekday.is_(None)),
             )
             # site-specific (site_id NOT NULL -> is_(None) is False -> sorts first)
@@ -211,10 +231,12 @@ class DispatchEngine:
             log.exception("dispatch.notify_webhook_failed")
             results["webhook"] = False
 
-        # email: when opted in, or when nobody resolved (page a human anyway)
+        # email: to the RESOLVED responder's own address so the on-call person is
+        # actually paged; fall back to the global inbox only when nobody resolved.
         if channels is None or "email" in channels:
+            recipient = responder.email if responder else None
             try:
-                ok, _ = await loop.run_in_executor(None, send_email, subject, body)
+                ok, _ = await loop.run_in_executor(None, send_email, subject, body, recipient)
                 results["email"] = ok
             except Exception:  # noqa: BLE001
                 log.exception("dispatch.notify_email_failed")
@@ -230,5 +252,14 @@ class DispatchEngine:
             except Exception:  # noqa: BLE001
                 log.exception("dispatch.notify_webpush_failed")
                 results["webpush"] = False
+
+        # sms: to the responder's phone via the configured gateway (was never wired)
+        if responder and responder.phone and (channels is None or "sms" in channels):
+            try:
+                ok, _ = await send_sms(responder.phone, f"{subject} — {dispatch.sitrep or ''}"[:300])
+                results["sms"] = ok
+            except Exception:  # noqa: BLE001
+                log.exception("dispatch.notify_sms_failed")
+                results["sms"] = False
 
         return results

@@ -21,6 +21,21 @@ class ObjectStore:
             secret_key=settings.minio_secret_key,
             secure=settings.minio_secure,
         )
+        # Presigned URLs are handed to the browser, so they must be signed for a host
+        # the browser can reach. Use a separate client bound to the public endpoint
+        # when one is configured (split internal/external networks); otherwise reuse
+        # the internal client.
+        public = settings.minio_public_endpoint or settings.minio_endpoint
+        self._presign_client = (
+            self.client
+            if public == settings.minio_endpoint
+            else Minio(
+                public,
+                access_key=settings.minio_access_key,
+                secret_key=settings.minio_secret_key,
+                secure=settings.minio_secure,
+            )
+        )
 
     def ensure_buckets(self, buckets: list[str] | None = None) -> None:
         for bucket in buckets or settings.all_buckets:
@@ -52,7 +67,7 @@ class ObjectStore:
         return self.client.stat_object(bucket, key)
 
     def presigned_get(self, bucket: str, key: str, expires_seconds: int = 3600) -> str:
-        return self.client.presigned_get_object(
+        return self._presign_client.presigned_get_object(
             bucket, key, expires=timedelta(seconds=expires_seconds)
         )
 

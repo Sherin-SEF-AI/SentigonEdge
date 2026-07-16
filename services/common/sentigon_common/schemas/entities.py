@@ -7,8 +7,9 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from ..redact import redact_url_credentials
 from .enums import (
     CameraStatus,
     CaseStatus,
@@ -72,6 +73,13 @@ class CameraOut(ORMModel):
     health: dict | None = None
     last_seen: datetime | None = None
     is_active: bool
+
+    # Never ship camera credentials to the browser: rtsp://user:pass@host -> ***@host.
+    # (This is the response schema only; internal code uses the raw ORM value.)
+    @field_validator("rtsp_uri", "onvif_uri")
+    @classmethod
+    def _redact_credentials(cls, v: str | None) -> str | None:
+        return redact_url_credentials(v)
 
 
 class SignatureOut(ORMModel):

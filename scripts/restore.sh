@@ -13,11 +13,20 @@ DB="sentigon_restore_test"
 [ "$MODE" = "--into-prod" ] && DB="sentigon"
 
 echo "restoring $DUMP into database '$DB'"
-if [ "$DB" = "sentigon_restore_test" ]; then
-  docker compose exec -T postgres psql -U sentigon -d postgres -c "DROP DATABASE IF EXISTS $DB;" >/dev/null
-  docker compose exec -T postgres psql -U sentigon -d postgres -c "CREATE DATABASE $DB;" >/dev/null
+if [ "$DB" = "sentigon" ]; then
+  echo "WARNING: this OVERWRITES the live '$DB' database. Stop the Sentigon services first."
+  read -r -p "Type 'yes' to proceed: " confirm
+  [ "$confirm" = "yes" ] || { echo "aborted"; exit 1; }
 fi
-gunzip -c "$DUMP" | docker compose exec -T postgres psql -U sentigon -d "$DB" >/dev/null 2>&1
+
+# Drop + recreate the target so the dump is not applied over an existing schema
+# (which silently errored on every 'already exists' before). Terminate open
+# connections first, then restore with errors surfaced (ON_ERROR_STOP, no 2>/dev/null).
+docker compose exec -T postgres psql -U sentigon -d postgres -v ON_ERROR_STOP=1 -c \
+  "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname='$DB' AND pid<>pg_backend_pid();" >/dev/null
+docker compose exec -T postgres psql -U sentigon -d postgres -v ON_ERROR_STOP=1 -c "DROP DATABASE IF EXISTS $DB;"
+docker compose exec -T postgres psql -U sentigon -d postgres -v ON_ERROR_STOP=1 -c "CREATE DATABASE $DB;"
+gunzip -c "$DUMP" | docker compose exec -T postgres psql -U sentigon -d "$DB" -v ON_ERROR_STOP=1
 
 echo "verifying restored data:"
 docker compose exec -T postgres psql -U sentigon -d "$DB" -c "

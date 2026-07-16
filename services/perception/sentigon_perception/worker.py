@@ -120,14 +120,18 @@ class PerceptionWorker(threading.Thread):
                 backoff = min(backoff * 2, 15.0)
                 continue
             self.stats["status"] = "online"
-            backoff = 1.0
+            connected_at = time.monotonic()
             try:
                 self._loop(cap)
             except Exception:
                 log.exception("perception.loop_error", camera=self.name_)
             finally:
                 cap.release()
-            if not self._stop.is_set() and self._stop.wait(backoff):
+            # Reset backoff only if the stream stayed up a while; a source that connects
+            # then immediately drops now backs off exponentially instead of hot-looping
+            # a reconnect + model re-init every second.
+            backoff = 1.0 if (time.monotonic() - connected_at) > 30.0 else min(backoff * 2, 15.0)
+            if self._stop.is_set() or self._stop.wait(backoff):
                 break
         self.stats["status"] = "offline"
         log.info("perception.worker_stopped", camera=self.name_)

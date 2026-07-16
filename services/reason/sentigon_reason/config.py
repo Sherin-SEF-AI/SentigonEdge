@@ -35,6 +35,24 @@ class ReasonSettings(BaseSettings):
     # natural-language activity notifications (VLM-evaluated, open-set)
     nl_enabled: bool = True
     nl_eval_tick_s: float = 8.0  # how often the evaluator wakes to check due NL alerts
+    # Proactive VLM sweep: evaluate the enabled VLM-detection ("gemini") catalog
+    # signatures against fresh camera frames so the open-vocab catalog can actually
+    # fire (context only produces geometric candidates; nothing else generates these).
+    # One batched VLM call per camera per interval.
+    vlm_sweep_enabled: bool = True
+    vlm_sweep_tick_s: float = 10.0  # evaluator wake interval
+    vlm_sweep_interval_s: float = 60.0  # minimum gap between sweeps of the same camera
+    vlm_sweep_cooldown_s: float = 300.0  # per (camera, signature) refire cooldown
+    vlm_sweep_max_signatures: int = 20  # cap signatures per prompt (token/latency budget)
+    vlm_sweep_max_cameras: int = 12  # cap cameras evaluated per tick
+    # open-vocabulary grounding ("find and box it"): localize the NL condition rather
+    # than returning a bare yes/no, and serve on-demand open-vocab detection.
+    ground_enabled: bool = True
+    ground_backend: str = "vlm"  # "vlm" (reuse the reason VLM) | "locateanything"
+    ground_endpoint: str = ""  # "" -> reason_endpoint (vlm) or the LocateAnything server base
+    ground_model: str = ""  # "" -> reason_model
+    ground_max_boxes: int = 12
+    ground_min_score: float = 0.3
 
 
 @lru_cache

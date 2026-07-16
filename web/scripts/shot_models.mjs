@@ -10,7 +10,10 @@ const out = "/tmp/sentigon-models.png";
 const lr = await fetch(`${API}/auth/login`, {
   method: "POST",
   headers: { "Content-Type": "application/json" },
-  body: JSON.stringify({ email: "admin@sentigon.local", password: "changeme123" }),
+  body: JSON.stringify({
+    email: process.env.SENTIGON_ADMIN_EMAIL ?? "admin@sentigon.local",
+    password: process.env.SENTIGON_ADMIN_PASSWORD ?? "",
+  }),
 });
 const auth = await lr.json();
 const stored = JSON.stringify({

@@ -5,12 +5,13 @@ from __future__ import annotations
 import os
 
 import uvicorn
+from sentigon_common.config import settings
 
 
 def main() -> None:
     uvicorn.run(
         "sentigon_api.app:app",
-        host="0.0.0.0",
+        host=settings.service_bind_host,
         port=int(os.environ.get("API_HTTP_PORT", "8010")),
         log_config=None,
     )

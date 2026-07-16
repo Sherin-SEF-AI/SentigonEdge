@@ -169,9 +169,10 @@ services:
     restart: unless-stopped
     depends_on: [prometheus, loki]
     environment:
-      GF_SECURITY_ADMIN_PASSWORD: sentigon
-      GF_AUTH_ANONYMOUS_ENABLED: "true"
-      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      # Anonymous Admin is off — it exposed every dashboard, all Loki logs, and
+      # datasource editing (an SSRF pivot) to anyone who could reach the port.
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-sentigon}
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
       GF_USERS_DEFAULT_THEME: dark
     volumes:
       - ./infra/grafana/provisioning:/etc/grafana/provisioning:ro

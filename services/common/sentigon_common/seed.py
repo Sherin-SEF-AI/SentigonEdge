@@ -101,11 +101,12 @@ def seed_signatures(session: Session) -> tuple[int, int]:
             )
             created += 1
         else:
+            # Refresh catalog-owned metadata only. Preserve operator-tuned fields
+            # (severity, params, enabled) — those are edited via the API and must not
+            # be reverted every time `make seed` runs.
             existing.category = d.category
             existing.description = d.description
-            existing.severity = sev
             existing.detection_method = method
-            existing.params = params
             updated += 1
     return created, updated
 

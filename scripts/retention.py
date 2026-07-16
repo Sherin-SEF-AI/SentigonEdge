@@ -25,7 +25,7 @@ from sentigon_common.db.models import AuditLogEntry, Event, Incident
 from sentigon_common.logging import configure_logging, get_logger
 from sentigon_common.schemas.enums import IncidentStatus
 from sentigon_common.storage import get_store
-from sqlalchemy import select
+from sqlalchemy import exists, select
 
 log = get_logger("retention")
 CLOSED = (IncidentStatus.RESOLVED, IncidentStatus.FALSE_POSITIVE)
@@ -58,19 +58,21 @@ def main() -> int:
         closed = session.execute(
             select(Incident).where(Incident.status.in_(CLOSED), Incident.created_at < cutoff)
         ).scalars().all()
-        event_ids = set()
         for inc in closed:
             counts["incidents"] += 1
-            if inc.event_id:
-                event_ids.add(inc.event_id)
             if args.apply:
                 session.delete(inc)
 
-        # events for those incidents (+ orphan events past the window), with their snapshots
+        # An event is safe to delete only when it is past the window AND no still-active
+        # (open / ack / escalated) incident references it. This prunes events of the
+        # closed incidents above and genuine orphans, but NEVER an event whose incident
+        # is still open — the previous `OR created_at < cutoff` deleted those too,
+        # silently destroying evidence for active investigations.
+        referenced_by_active = exists().where(
+            (Incident.event_id == Event.id) & Incident.status.not_in(CLOSED)
+        )
         events = session.execute(
-            select(Event).where(
-                (Event.id.in_(event_ids)) | (Event.created_at < cutoff)
-            )
+            select(Event).where(Event.created_at < cutoff, ~referenced_by_active)
         ).scalars().all()
         for ev in events:
             counts["events"] += 1

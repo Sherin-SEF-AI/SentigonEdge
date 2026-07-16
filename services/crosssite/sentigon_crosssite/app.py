@@ -15,7 +15,7 @@ from collections.abc import AsyncIterator
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from sentigon_common.auth import user_from_token
+from sentigon_common.auth import install_auth_middleware, user_from_token
 from sentigon_common.config import settings as common_settings
 from sentigon_common.db import async_session_factory
 from sentigon_common.db.models import Camera, CrossSiteLink, PlateSighting, Site
@@ -92,8 +92,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 app = FastAPI(title="Sentigon CrossSite", version="0.1.0", lifespan=lifespan)
 app.add_middleware(
-    CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"]
+    CORSMiddleware, allow_origins=common_settings.cors_origin_list, allow_credentials=True, allow_methods=["*"], allow_headers=["*"]
 )
+install_auth_middleware(app, protect_reads=True)
 app.include_router(make_health_router("crosssite", {"postgres": check_postgres}))
 mount_metrics(app)
 

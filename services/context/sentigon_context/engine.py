@@ -10,7 +10,8 @@ import time
 import uuid
 from collections import deque
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
+from zoneinfo import ZoneInfo
 
 import httpx
 from sentigon_common.db import async_session_factory
@@ -199,6 +200,7 @@ class ContextEngine:
         self.anomaly_fires: dict[str, float] = {}
         self.cooldowns: dict[tuple, float] = {}
         self._meta_loaded = 0.0
+        self._last_state_prune = 0.0
         self.stats = {"events": 0, "incidents": 0, "frames": 0}
 
     async def start(self) -> None:
@@ -321,6 +323,7 @@ class ContextEngine:
             st.zones = new_zones
 
         pruned = self._prune(cam, now)
+        self._prune_state(now)
         if settings.handoff_enabled and pruned:
             await self._check_handoffs(camera_id, pruned, now)
         if settings.zone_analytics_enabled:
@@ -486,7 +489,7 @@ class ContextEngine:
         if now - last < settings.zone_snapshot_interval_s:
             return
         cam._last_zone_snap = now  # type: ignore[attr-defined]
-        ts = datetime.fromtimestamp(now)
+        ts = datetime.fromtimestamp(now, tz=UTC)
         rows = []
         for zid, zs in cam.zones.items():
             avg_dwell = zs.dwell_sum / zs.dwell_count if zs.dwell_count else 0.0
@@ -593,6 +596,22 @@ class ContextEngine:
                 return pl.get("camera_id"), pl.get("track_id"), float(h.score), abs(gap)
         return None
 
+    def _prune_state(self, now: float) -> None:
+        """Evict stale cooldown / handoff-fire entries so these maps do not grow
+        unbounded on busy cameras with high track-id churn (TrackState is already
+        pruned; these were not). Throttled to once a minute; horizons are far larger
+        than any real cooldown so an active cooldown is never dropped."""
+        if now - self._last_state_prune < 60.0:
+            return
+        self._last_state_prune = now
+        self.cooldowns = {k: t for k, t in self.cooldowns.items() if now - t < 3600.0}
+        self.handoff_fires = {
+            k: t for k, t in self.handoff_fires.items() if now - t < settings.handoff_cooldown_s * 8
+        }
+        self.anomaly_fires = {
+            k: t for k, t in self.anomaly_fires.items() if now - t < settings.anomaly_cooldown_s * 8
+        }
+
     def _prune(self, cam: CameraState, now: float) -> list[TrackState]:
         """Drop tracks unseen past the stale window. Returns the pruned tracks so
         a person leaving frame can be correlated to another camera (handoff)."""
@@ -617,9 +636,14 @@ class ContextEngine:
         for key in [keys] if isinstance(keys, str) else keys:
             if key in cond and cond[key] is not None:
                 try:
-                    return float(cond[key])
+                    val = float(cond[key])
                 except (TypeError, ValueError):
                     continue
+                # non-positive thresholds are a misconfiguration and are used as
+                # `x / (thr*2)` confidence denominators — fall back to the (positive)
+                # default rather than dividing by zero and crashing frame processing.
+                if val > 0:
+                    return val
         return default
 
     def _eval_intrusion(self, entered: list[tuple[TrackState, str]], now: float) -> list[Candidate]:
@@ -744,7 +768,7 @@ class ContextEngine:
         out = []
         homography = self.cam_homography.get(str(cam.camera_id))
         veh_kmh = self._threshold("Speeding Vehicle", "speed_kmh", settings.vehicle_speed_kmh)
-        run_ms = self._threshold("Running", "speed_ms", settings.run_speed_ms)
+        run_ms = self._threshold("Running/Fleeing", "speed_ms", settings.run_speed_ms)
         for st in cam.tracks.values():
             if now - st.first_seen <= settings.min_track_age_seconds:
                 continue
@@ -770,7 +794,7 @@ class ContextEngine:
                 elif st.object_class == "person" and mps > run_ms:
                     out.append(
                         Candidate(
-                            "Running", "running",
+                            "Running/Fleeing", "running",
                             f"person running ({mps:.1f} m/s)", None, str(st.track_id),
                             min(1.0, mps / (run_ms * 2)),
                             {"track_ids": [st.track_id], "bbox": st.last_bbox},
@@ -822,7 +846,7 @@ class ContextEngine:
         bump its occurrence_count + last_seen and return True (this detection was
         grouped). Otherwise return False (caller creates a fresh incident)."""
         since = datetime.fromtimestamp(now - settings.dedup_window_s)
-        nowdt = datetime.fromtimestamp(now)
+        nowdt = datetime.fromtimestamp(now, tz=UTC)
         open_states = [IncidentStatus.NEW, IncidentStatus.ACK, IncidentStatus.ESCALATED]
         zone_pred = Incident.zone_id.is_(None) if zone_uuid is None else Incident.zone_id == zone_uuid
         async with async_session_factory() as session:
@@ -929,7 +953,13 @@ class ContextEngine:
         camera/zone right now (local time), or None. Handles overnight windows."""
         if not self.schedules:
             return None
-        dt = datetime.fromtimestamp(now)
+        # windows are authored in site-local time (minutes since local midnight,
+        # local weekday), so evaluate them in the site's timezone, not server/UTC.
+        try:
+            tz = ZoneInfo(settings.schedule_timezone)
+        except Exception:  # noqa: BLE001
+            tz = UTC
+        dt = datetime.fromtimestamp(now, tz=tz)
         minute = dt.hour * 60 + dt.minute
         weekday = dt.weekday()  # 0=Mon..6=Sun
         cam = str(camera_id)
@@ -961,6 +991,10 @@ class ContextEngine:
     async def _fire(self, camera_id: uuid.UUID, c: Candidate, now: float) -> None:
         sig = self.registry.get(c.signature_name)
         if sig is None:
+            # A candidate whose signature name is not seeded would otherwise be
+            # dropped silently. Surface it so unseeded/renamed signatures are
+            # caught instead of vanishing (see catalog.py runtime signatures).
+            log.warning("fire.unknown_signature", signature=c.signature_name)
             return
         key = (camera_id, c.signature_name, c.scope)
         if now - self.cooldowns.get(key, -1e12) < sig["cooldown"]:
@@ -993,7 +1027,7 @@ class ContextEngine:
         set_correlation_id(correlation_id)
         severity: Severity = sig["severity"]
         snapshot_ref = await self.snap.snapshot(camera_id)
-        ts = datetime.fromtimestamp(now)
+        ts = datetime.fromtimestamp(now, tz=UTC)
         # initial composite threat score (re-scored by reason when the VLM verdict lands)
         zone_type = (self.zone_meta.get(c.zone_id) or {}).get("type") if c.zone_id else None
         risk_score, _ = compute_risk_score(

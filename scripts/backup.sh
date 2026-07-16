@@ -14,14 +14,36 @@ docker compose exec -T postgres pg_dump -U sentigon -d sentigon --no-owner \
   | gzip > "$OUT/sentigon.sql.gz"
 echo "   -> $OUT/sentigon.sql.gz ($(du -h "$OUT/sentigon.sql.gz" | cut -f1))"
 
-echo "2. MinIO buckets (mc mirror inside the container)"
-docker compose exec -T minio sh -c '
-  mc alias set local http://localhost:9000 "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD" >/dev/null 2>&1 || true
-  for b in snapshots clips recordings evidence; do
-    mc ls local/$b >/dev/null 2>&1 && echo "   bucket $b: $(mc ls --recursive local/$b | wc -l) objects" || true
-  done' 2>/dev/null || echo "   (mc summary)"
-# object-level backup via the S3 API count (data lives in the miniodata docker volume)
-echo "   MinIO data volume backed by docker volume 'sentigon_miniodata' (snapshot the volume for a full object backup)"
+echo "2. MinIO objects -> $OUT/minio (real object copy via the S3 API)"
+uv run python - "$OUT/minio" <<'PY'
+import os
+import sys
+
+from minio import Minio
+from sentigon_common.config import settings
+
+dest = sys.argv[1]
+client = Minio(
+    settings.minio_endpoint,
+    access_key=settings.minio_access_key,
+    secret_key=settings.minio_secret_key,
+    secure=settings.minio_secure,
+)
+total = 0
+for bucket in settings.all_buckets:
+    if not client.bucket_exists(bucket):
+        print(f"   bucket {bucket}: absent, skipped")
+        continue
+    n = 0
+    for obj in client.list_objects(bucket, recursive=True):
+        target = os.path.join(dest, bucket, obj.object_name)
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+        client.fget_object(bucket, obj.object_name, target)
+        n += 1
+    total += n
+    print(f"   bucket {bucket}: {n} objects copied")
+print(f"   MinIO objects backed up: {total}")
+PY
 
 echo "$TS" > backups/latest.txt
 echo "backup complete: $OUT"

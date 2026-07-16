@@ -136,24 +136,40 @@ class IngestManager:
                 session.commit()
             self._enforce_retention(seg.camera_id)
             log.info("segment.uploaded", camera=str(seg.camera_id), key=key, bytes=size)
-        except Exception:  # noqa: BLE001
-            log.exception("segment.upload_failed", camera=str(seg.camera_id))
-        finally:
+            # delete the local copy ONLY after a confirmed upload + Recording row
             with contextlib.suppress(OSError):
                 os.remove(seg.path)
+        except Exception:  # noqa: BLE001
+            # never destroy the only copy on a transient MinIO/DB error — move it
+            # aside so it survives for retry/recovery instead of vanishing.
+            log.exception("segment.upload_failed", camera=str(seg.camera_id), path=seg.path)
+            with contextlib.suppress(OSError):
+                failed_dir = os.path.join(os.path.dirname(seg.path) or ".", "failed")
+                os.makedirs(failed_dir, exist_ok=True)
+                os.replace(seg.path, os.path.join(failed_dir, os.path.basename(seg.path)))
 
     def _enforce_retention(self, camera_id: uuid.UUID) -> None:
         limit = ingest_settings.retention_segments
+        # Scope to CONTINUOUS segments only: event/preroll/manual clips are evidence
+        # and must not be pruned by the rolling continuous-recording window.
         with sync_session_factory() as session:
             count = session.scalar(
-                select(func.count()).select_from(Recording).where(Recording.camera_id == camera_id)
+                select(func.count())
+                .select_from(Recording)
+                .where(
+                    Recording.camera_id == camera_id,
+                    Recording.recording_type == RecordingType.CONTINUOUS,
+                )
             )
             if not count or count <= limit:
                 return
             old = (
                 session.execute(
                     select(Recording)
-                    .where(Recording.camera_id == camera_id)
+                    .where(
+                        Recording.camera_id == camera_id,
+                        Recording.recording_type == RecordingType.CONTINUOUS,
+                    )
                     .order_by(Recording.start_time.asc())
                     .limit(count - limit)
                 )

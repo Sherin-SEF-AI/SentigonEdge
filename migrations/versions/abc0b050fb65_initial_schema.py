@@ -378,3 +378,12 @@ def downgrade() -> None:
     op.drop_index(op.f('ix_evidence_records_seq'), table_name='evidence_records')
     op.drop_table('evidence_records')
     # ### end Alembic commands ###
+    # Alembic's create_table made these native enum types but drop_table does not
+    # remove them; without this a `downgrade base` then `upgrade head` fails at the
+    # unguarded CREATE TYPE. Drop them explicitly (idempotent).
+    for _enum in (
+        "severity", "detection_method", "incident_status", "verdict", "camera_status",
+        "zone_type", "user_role", "case_status", "recording_type", "access_event_type",
+        "model_role", "model_stage",
+    ):
+        op.execute(f"DROP TYPE IF EXISTS {_enum}")

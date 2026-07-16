@@ -112,6 +112,18 @@ class ReasonEngine:
             log.info("reason.deferred_backpressure", corr=corr, age_s=round(age, 1), severity=sev_name)
             return
 
+        # Idempotency: the bus is at-least-once, so a candidate can be redelivered.
+        # If its incident is already verified, do not re-run the VLM, re-publish, or
+        # double-count — just acknowledge.
+        if corr:
+            async with async_session_factory() as session:
+                prior = await session.scalar(
+                    select(Incident.verdict).where(Incident.correlation_id == corr)
+                )
+            if prior is not None:
+                log.info("reason.already_verified", corr=corr)
+                return
+
         result = await verify(payload)
         verdict = Verdict(result["verdict"])
 

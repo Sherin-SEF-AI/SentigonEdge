@@ -1,4 +1,6 @@
 // Web Push subscription against the notify service (self-generated VAPID).
+import { authHeaders } from "./api";
+
 const NOTIFY_URL = process.env.NEXT_PUBLIC_NOTIFY_URL ?? "http://localhost:8070";
 
 function urlBase64ToUint8Array(base64: string): Uint8Array {
@@ -30,7 +32,7 @@ export async function subscribeToPush(): Promise<{ ok: boolean; detail: string }
   });
   const res = await fetch(`${NOTIFY_URL}/push/subscribe`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...authHeaders() },
     body: JSON.stringify(sub.toJSON()),
   }).then((r) => r.json());
   return { ok: true, detail: `subscribed (${res.subscriptions} total)` };
@@ -38,7 +40,10 @@ export async function subscribeToPush(): Promise<{ ok: boolean; detail: string }
 
 export async function testPush(): Promise<{ ok: boolean; detail: string }> {
   try {
-    const res = await fetch(`${NOTIFY_URL}/push/test`, { method: "POST" }).then((r) => r.json());
+    const res = await fetch(`${NOTIFY_URL}/push/test`, {
+      method: "POST",
+      headers: { ...authHeaders() },
+    }).then((r) => r.json());
     return { ok: !!res.ok, detail: res.detail ?? (res.ok ? "sent" : "no subscriptions") };
   } catch (e) {
     return { ok: false, detail: e instanceof Error ? e.message : "request failed" };

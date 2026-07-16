@@ -1,10 +1,12 @@
 """Natural-language activity notifications.
 
 Operators define an alert in plain English ('a person on a ladder near the racks').
-This evaluator periodically grabs a fresh frame from the alert's camera and asks the
-VLM whether the condition is present; on a match it fires a real, VLM-confirmed
-incident. Open-set detection with no authored signature (Ambient 'Activity
-Notifications' equivalent).
+This evaluator periodically grabs a fresh frame from the alert's camera and, when
+grounding is enabled, asks the grounder to *localize* the condition — a match is one
+or more confident boxes, which are pinned on the fired incident so an operator sees
+exactly where the thing is, not just that it happened. With grounding off it falls
+back to a plain yes/no VLM verdict. Open-set detection with no authored signature
+(Ambient 'Activity Notifications' equivalent).
 """
 
 from __future__ import annotations
@@ -24,36 +26,14 @@ from sentigon_common.db.models import Event, Incident, IncidentStatusLog, NLAler
 from sentigon_common.logging import get_logger
 from sentigon_common.risk import compute_risk_score
 from sentigon_common.schemas.enums import IncidentStatus, Verdict
-from sentigon_common.storage import get_store
 from sqlalchemy import select, update
 
 from .config import settings
+from .grounding import GroundedBox, fresh_frame, ground
 
 log = get_logger("reason.nl")
-_store = get_store()
 _JSON = re.compile(r"\{.*\}", re.DOTALL)
 _SIGNATURE = "Custom Activity Alert"
-
-
-def _fetch(ref: str | None) -> bytes | None:
-    if not ref or "/" not in ref:
-        return None
-    bucket, key = ref.split("/", 1)
-    try:
-        return _store.get_bytes(bucket, key)
-    except Exception:  # noqa: BLE001
-        return None
-
-
-async def _fresh_frame(camera_id: str) -> bytes | None:
-    try:
-        async with httpx.AsyncClient(timeout=6.0) as c:
-            r = await c.post(f"{settings.ingest_url}/cameras/{camera_id}/snapshot")
-            if r.status_code == 200:
-                return _fetch(r.json().get("ref"))
-    except Exception:  # noqa: BLE001
-        return None
-    return None
 
 
 async def evaluate_nl(image: bytes, prompt: str) -> tuple[bool, str]:
@@ -128,13 +108,18 @@ class NLAlertEvaluator:
                 continue
             if a.last_eval_at and (now - a.last_eval_at).total_seconds() < a.eval_interval_s:
                 continue
-            frame = await _fresh_frame(str(a.camera_id))
+            frame_ref, frame = await fresh_frame(str(a.camera_id))
             await self._mark_eval(a.id, now)
             if frame is None:
                 continue
             self.stats["evaluations"] += 1
+            boxes: list[GroundedBox] = []
             try:
-                match, reason = await evaluate_nl(frame, a.prompt)
+                if settings.ground_enabled:
+                    res = await ground(frame, a.prompt)
+                    match, reason, boxes = res.match, res.reason, res.boxes
+                else:
+                    match, reason = await evaluate_nl(frame, a.prompt)
             except Exception:  # noqa: BLE001
                 log.exception("nl.vlm_error", alert=a.name)
                 continue
@@ -143,7 +128,7 @@ class NLAlertEvaluator:
             self.stats["matches"] += 1
             if a.last_fired_at and (now - a.last_fired_at).total_seconds() < a.cooldown_s:
                 continue
-            await self._fire(a, reason)
+            await self._fire(a, reason, frame_ref, boxes)
 
     async def _mark_eval(self, alert_id: uuid.UUID, now: datetime) -> None:
         async with async_session_factory() as session:
@@ -152,19 +137,32 @@ class NLAlertEvaluator:
             )
             await session.commit()
 
-    async def _fire(self, a: NLAlert, reason: str) -> None:
+    async def _fire(
+        self,
+        a: NLAlert,
+        reason: str,
+        frame_ref: str | None = None,
+        boxes: list[GroundedBox] | None = None,
+    ) -> None:
         sig_id = await self._signature_id()
         now = datetime.now(UTC)
         corr = uuid.uuid4().hex
+        box_dicts = [b.as_dict() for b in (boxes or [])]
+        method = "nl-grounded" if box_dicts else "nl-vlm"
         risk, _ = compute_risk_score(
             severity=a.severity.value, category="behavioral", confidence=0.85, verdict="confirmed"
         )
+        attributes = {
+            "nl_alert": a.name, "prompt": a.prompt, "reason": reason, "method": method,
+        }
+        if box_dicts:
+            attributes["boxes"] = box_dicts  # normalized [x1,y1,x2,y2]; overlaid on the snapshot
         async with async_session_factory() as session:
             ev = Event(
                 signature_id=sig_id, camera_id=a.camera_id, event_type="nl.activity",
                 ts=now, severity=a.severity, confidence=0.85,
-                object_refs={"nl_alert_id": str(a.id)},
-                context={"nl_alert": a.name, "prompt": a.prompt, "reason": reason, "method": "nl-vlm"},
+                object_refs={"nl_alert_id": str(a.id), "boxes": box_dicts},
+                context={"nl_alert": a.name, "prompt": a.prompt, "reason": reason, "method": method},
                 correlation_id=corr,
             )
             session.add(ev)
@@ -174,7 +172,7 @@ class NLAlertEvaluator:
                 title=f"Activity notification: {a.name}", severity=a.severity,
                 status=IncidentStatus.NEW, confidence=0.85, risk_score=risk,
                 verdict=Verdict.CONFIRMED, sitrep=reason,
-                attributes={"nl_alert": a.name, "prompt": a.prompt, "reason": reason, "method": "nl-vlm"},
+                attributes=attributes, snapshot_ref=frame_ref,
                 correlation_id=corr, last_seen_at=now,
             )
             session.add(inc)
@@ -189,4 +187,7 @@ class NLAlertEvaluator:
             )
             await session.commit()
         self.stats["fired"] += 1
-        log.info("nl.fired", alert=a.name, camera=str(a.camera_id), reason=reason[:80])
+        log.info(
+            "nl.fired", alert=a.name, camera=str(a.camera_id),
+            reason=reason[:80], boxes=len(box_dicts), method=method,
+        )

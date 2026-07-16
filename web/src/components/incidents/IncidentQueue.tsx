@@ -51,6 +51,37 @@ const FILTERS = [
   { key: "resolved", label: "Resolved" },
 ];
 
+type GBox = { label: string; score: number; box: [number, number, number, number] };
+
+// Draws grounded ("find and box it") boxes over the incident snapshot. Coords are
+// normalized 0..1 against the same frame the model localized, and the snapshot img
+// uses object-contain at full width (no letterbox), so percentages map 1:1.
+function GroundingOverlay({ boxes }: { boxes: GBox[] }) {
+  return (
+    <div className="pointer-events-none absolute inset-0">
+      {boxes.map((b, i) => {
+        const [x1, y1, x2, y2] = b.box;
+        return (
+          <div
+            key={i}
+            className="absolute border border-cyan shadow-[0_0_0_1px_rgba(0,0,0,0.5)]"
+            style={{
+              left: `${x1 * 100}%`,
+              top: `${y1 * 100}%`,
+              width: `${(x2 - x1) * 100}%`,
+              height: `${(y2 - y1) * 100}%`,
+            }}
+          >
+            <span className="mono absolute -top-[13px] left-0 whitespace-nowrap bg-cyan px-1 text-[9px] font-semibold text-base">
+              {b.label} {Number(b.score).toFixed(2)}
+            </span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 function DetailPane({ id }: { id: string }) {
   const { data } = useIncident(id);
   const action = useIncidentAction();
@@ -74,6 +105,7 @@ function DetailPane({ id }: { id: string }) {
   const d = data as Record<string, unknown>;
   const sev = String(d.severity);
   const ctx = (d.attributes ?? {}) as Record<string, unknown>;
+  const boxes: GBox[] = Array.isArray(ctx.boxes) ? (ctx.boxes as GBox[]) : [];
   const timeline = (d.timeline ?? []) as { to: string; note: string; ts: string }[];
   const verdict = d.verdict ? String(d.verdict) : null;
   const reasoning = ((d.reasoning_trace ?? {}) as Record<string, unknown>).reasoning as
@@ -95,8 +127,11 @@ function DetailPane({ id }: { id: string }) {
       </div>
 
       {d.snapshot_url ? (
-        // eslint-disable-next-line @next/next/no-img-element
-        <img src={String(d.snapshot_url)} alt="incident snapshot" className="w-full border-b border-line bg-black object-contain" />
+        <div className="relative border-b border-line bg-black">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src={String(d.snapshot_url)} alt="incident snapshot" className="w-full object-contain" />
+          {boxes.length > 0 && <GroundingOverlay boxes={boxes} />}
+        </div>
       ) : (
         <div className="flex h-40 items-center justify-center border-b border-line text-[12px] text-fg-muted">
           no snapshot
@@ -125,7 +160,7 @@ function DetailPane({ id }: { id: string }) {
       </div>
 
       <div className="grid grid-cols-2 gap-px bg-line-soft">
-        {Object.entries(ctx).map(([k, v]) => (
+        {Object.entries(ctx).filter(([k]) => k !== "boxes").map(([k, v]) => (
           <div key={k} className="bg-panel px-3 py-1.5">
             <div className="text-[10px] uppercase text-fg-muted">{k}</div>
             <div className="mono text-[12px] text-fg">{typeof v === "object" ? JSON.stringify(v) : String(v)}</div>

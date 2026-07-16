@@ -19,6 +19,8 @@ from __future__ import annotations
 import json
 import os
 import sys
+import uuid
+from datetime import UTC, datetime
 
 import gi
 
@@ -78,10 +80,17 @@ def _osd_probe(pad, info, _u):
 
         src = frame.source_id
         camera_id = _SOURCE_IDS[src] if src < len(_SOURCE_IDS) else str(src)
+        # frame_ts is REQUIRED by ObjectDetectionMsg and the context consumer drops
+        # any message missing it (silently) — without this the entire DeepStream/GPU
+        # path produced zero downstream events. Also stamp the envelope fields.
+        _now_iso = datetime.now(UTC).isoformat()
         msg = {
+            "message_id": str(uuid.uuid4()),
             "producer": "perception-deepstream",
+            "ts": _now_iso,
             "camera_id": camera_id,
             "seq": int(frame.frame_num),
+            "frame_ts": _now_iso,
             "frame_width": MUXER_W,
             "frame_height": MUXER_H,
             "objects": objects,

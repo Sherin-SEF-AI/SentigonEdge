@@ -58,6 +58,11 @@ class ContextSettings(BaseSettings):
     dedup_enabled: bool = True
     dedup_window_s: float = 150.0  # group a new detection into an open incident within this window
 
+    # Timezone for evaluating schedule-suppression windows (start/end minute and
+    # days_of_week are authored in site-local time). Single-site-per-box deployment,
+    # so one zone; set to the site's IANA tz (e.g. "America/New_York").
+    schedule_timezone: str = "UTC"
+
     # behavioral anomaly detection (learned per-zone/hour baselines -> deviation)
     anomaly_enabled: bool = True
     anomaly_sigma: float = 3.0  # fire when current occupancy is this many std above baseline

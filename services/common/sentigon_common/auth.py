@@ -6,11 +6,13 @@ investigator < admin. Writes require operator+; admin passes any check.
 """
 from __future__ import annotations
 
+import hmac
 import uuid
 from datetime import UTC, datetime, timedelta
 
 import httpx
-from fastapi import Depends, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse
 from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError, jwt
 from passlib.context import CryptContext
@@ -74,6 +76,16 @@ async def _user_from_oidc(claims: dict) -> User | None:
 WRITER_ROLES = {UserRole.OPERATOR, UserRole.INVESTIGATOR, UserRole.ADMIN}
 
 
+def secure_compare(provided: str | None, expected: str | None) -> bool:
+    """Constant-time secret/token comparison (avoids timing side-channels).
+
+    Use for the shared internal X-Service-Token check in every service instead of
+    a plain ``==``. Returns False if either side is empty."""
+    if not provided or not expected:
+        return False
+    return hmac.compare_digest(provided, expected)
+
+
 def hash_password(plain: str) -> str:
     return _pwd.hash(plain)
 
@@ -133,3 +145,75 @@ def require_role(*roles: UserRole):
 
 def is_writer(user: User) -> bool:
     return user.role in WRITER_ROLES
+
+
+_DEFAULT_PUBLIC_PATHS = {"/healthz", "/readyz", "/metrics", "/docs", "/openapi.json"}
+_WRITE_METHODS = {"POST", "PATCH", "PUT", "DELETE"}
+
+
+def _bearer_from(request: Request) -> str | None:
+    auth = request.headers.get("authorization", "")
+    return auth[7:].strip() if auth.lower().startswith("bearer ") else None
+
+
+def cors_headers_for(request: Request) -> dict[str, str]:
+    """CORS headers to attach to an auth error response. The auth middleware runs
+    OUTSIDE CORSMiddleware, so its 401/403 short-circuits never get CORS headers —
+    the browser then blocks the response and JS can't even read the 401 to prompt a
+    login. Echo the allowed Origin here so the status is readable cross-origin."""
+    origin = request.headers.get("origin")
+    if origin and origin in settings.cors_origin_list:
+        return {
+            "Access-Control-Allow-Origin": origin,
+            "Access-Control-Allow-Credentials": "true",
+            "Vary": "Origin",
+        }
+    return {}
+
+
+def install_auth_middleware(
+    app: FastAPI,
+    *,
+    protect_reads: bool = True,
+    public_paths: set[str] | None = None,
+) -> None:
+    """Attach a uniform auth gate to a service app so no service is wide open.
+
+    Writes always require operator+ (or the internal X-Service-Token); reads
+    require viewer+ when ``protect_reads`` is True (leave False for live-video
+    services whose reads the browser hits directly without a token). Health,
+    metrics, docs and any ``public_paths`` stay open. Resolves identity once and
+    stashes it on ``request.state.user`` / ``request.state.service``. Constant-time
+    token compare. CORS preflight (OPTIONS) is always allowed."""
+    public = _DEFAULT_PUBLIC_PATHS | (public_paths or set())
+
+    @app.middleware("http")
+    async def _auth(request: Request, call_next):  # noqa: ANN001, ANN202
+        request.state.user = None
+        request.state.service = False
+        path = request.url.path
+        if request.method == "OPTIONS" or path in public or path.startswith("/health"):
+            return await call_next(request)
+
+        is_write = request.method in _WRITE_METHODS
+        service_ok = secure_compare(request.headers.get("x-service-token"), settings.service_token)
+        if not service_ok and not is_write and not protect_reads:
+            return await call_next(request)  # deliberately-open read
+
+        user = None if service_ok else await user_from_token(_bearer_from(request))
+        request.state.user = user
+        request.state.service = service_ok
+        if not service_ok:
+            if user is None:
+                return JSONResponse(
+                    {"detail": "authentication required"},
+                    status_code=401,
+                    headers=cors_headers_for(request),
+                )
+            if is_write and not is_writer(user):
+                return JSONResponse(
+                    {"detail": "insufficient role (operator+ required)"},
+                    status_code=403,
+                    headers=cors_headers_for(request),
+                )
+        return await call_next(request)

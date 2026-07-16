@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import contextlib
 import os
+import re
 import subprocess
 import threading
 import time
@@ -37,6 +38,7 @@ class Source:
     source_fps: str = ""
     restarts: int = 0
     camera_id: str | None = None
+    stop_event: threading.Event = field(default_factory=threading.Event)
 
 
 class MediaSourceManager:
@@ -146,7 +148,7 @@ class MediaSourceManager:
 
     def _run_source(self, s: Source) -> None:
         backoff = settings.reconnect_base
-        while not self._stop.is_set():
+        while not self._stop.is_set() and not s.stop_event.is_set():
             proc = subprocess.Popen(
                 self._ffmpeg_cmd(s), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
             )
@@ -154,12 +156,12 @@ class MediaSourceManager:
             s.status = "publishing"
             log.info("mediasource.publishing", name=s.name, path=s.path, codec=s.codec)
             proc.wait()
-            if self._stop.is_set():
+            if self._stop.is_set() or s.stop_event.is_set():
                 break
             s.status = "reconnecting"
             s.restarts += 1
             log.warning("mediasource.exited", name=s.name, rc=proc.returncode, restarts=s.restarts)
-            if self._stop.wait(backoff):
+            if s.stop_event.wait(backoff):  # per-source stop wakes this immediately
                 break
             backoff = min(backoff * 2, settings.reconnect_max)
         s.status = "stopped"
@@ -190,16 +192,20 @@ class MediaSourceManager:
         for s in self.sources:
             if s.status == "unreachable":
                 continue
-            deadline = time.monotonic() + settings.ready_timeout
-            while time.monotonic() < deadline and not self._stop.is_set():
-                if self._path_ready(s.path):
-                    break
-                if self._stop.wait(1.0):
-                    return
+            self._register_one(s)
+
+    def _register_one(self, s: Source) -> None:
+        """Wait for the MediaMTX path to go live, then onboard the Camera + Zone."""
+        deadline = time.monotonic() + settings.ready_timeout
+        while time.monotonic() < deadline and not self._stop.is_set():
             if self._path_ready(s.path):
-                self._register(s)
-            else:
-                log.warning("mediasource.not_ready", path=s.path)
+                break
+            if self._stop.wait(1.0):
+                return
+        if self._path_ready(s.path):
+            self._register(s)
+        else:
+            log.warning("mediasource.not_ready", path=s.path)
 
     def _register(self, s: Source) -> None:
         rtsp = f"{settings.mediamtx_rtsp}/{s.path}"
@@ -212,9 +218,11 @@ class MediaSourceManager:
                     log.warning("mediasource.no_site")
                     return
                 site_id = sites[0]["id"]
-                cams = {x["name"]: x for x in c.get(f"{settings.api_url}/cameras").json()}
-                if s.name in cams:
-                    s.camera_id = cams[s.name]["id"]
+                # match on the stable rtsp path, not the name — so a camera renamed
+                # in the console is reused (not duplicated) on the next register.
+                cams = {x.get("rtsp_uri"): x for x in c.get(f"{settings.api_url}/cameras").json()}
+                if rtsp in cams:
+                    s.camera_id = cams[rtsp]["id"]
                 else:
                     r = c.post(
                         f"{settings.ingest_url}/cameras",
@@ -253,25 +261,134 @@ class MediaSourceManager:
 
     def stop(self) -> None:
         self._stop.set()
+        for s in self.sources:
+            s.stop_event.set()
         for p in self.procs.values():
             with contextlib.suppress(Exception):
                 p.terminate()
         for t in self.threads.values():
             t.join(timeout=5.0)
 
+    def remove_source(self, camera_id: str) -> bool:
+        """Stop the relay bound to `camera_id` and drop it from the config so it is
+        not re-created on the next start. Used by the API's DELETE /cameras/{id}."""
+        s = next((x for x in self.sources if x.camera_id == camera_id), None)
+        if s is None:
+            return False
+        s.stop_event.set()
+        proc = self.procs.pop(s.path, None)
+        if proc is not None:
+            with contextlib.suppress(Exception):
+                proc.terminate()
+        t = self.threads.pop(s.path, None)
+        if t is not None:
+            t.join(timeout=5.0)
+        self.sources = [x for x in self.sources if x.path != s.path]
+        self._remove_source_from_config(s.path)
+        log.info("mediasource.source_removed", name=s.name, path=s.path, camera_id=camera_id)
+        return True
+
+    def _remove_source_from_config(self, path: str) -> None:
+        cfg = Path(settings.config_file)
+        text = cfg.read_text()
+        data = yaml.safe_load(text) or {"sources": []}
+        data["sources"] = [x for x in data.get("sources", []) if x.get("path") != path]
+        head = "".join(line for line in text.splitlines(keepends=True) if line.startswith("#"))
+        with cfg.open("w") as f:
+            if head:
+                f.write(head + "\n")
+            yaml.safe_dump(data, f, sort_keys=False, default_flow_style=False)
+
+    def _status_of(self, s: Source) -> dict:
+        return {
+            "name": s.name,
+            "path": s.path,
+            "type": s.type,
+            "status": s.status,
+            "codec": s.codec,
+            "source_fps": s.source_fps,
+            "target_fps": s.fps,
+            "restarts": s.restarts,
+            "camera_id": s.camera_id,
+            "whep_url": f"{settings.webrtc_base}/{s.path}/whep",
+        }
+
     def status(self) -> list[dict]:
-        return [
-            {
-                "name": s.name,
-                "path": s.path,
-                "type": s.type,
-                "status": s.status,
-                "codec": s.codec,
-                "source_fps": s.source_fps,
-                "target_fps": s.fps,
-                "restarts": s.restarts,
-                "camera_id": s.camera_id,
-                "whep_url": f"{settings.webrtc_base}/{s.path}/whep",
-            }
-            for s in self.sources
-        ]
+        return [self._status_of(s) for s in self.sources]
+
+    # ── dynamic USB onboarding (console "scan + add") ─────────
+    def registered_device_urls(self) -> set[str]:
+        """Device paths already added as sources (so a scan can flag duplicates)."""
+        return {s.url for s in self.sources}
+
+    def _persist_source(self, entry: dict) -> None:
+        """Append a source to media_sources.yaml (replacing any with the same path),
+        preserving the leading comment header. Mirrors scripts/add_usb_camera.py so
+        the source survives a service restart."""
+        cfg = Path(settings.config_file)
+        text = cfg.read_text()
+        data = yaml.safe_load(text) or {"sources": []}
+        data.setdefault("sources", [])
+        data["sources"] = [x for x in data["sources"] if x.get("path") != entry["path"]]
+        data["sources"].append(entry)
+        head = "".join(line for line in text.splitlines(keepends=True) if line.startswith("#"))
+        with cfg.open("w") as f:
+            if head:
+                f.write(head + "\n")
+            yaml.safe_dump(data, f, sort_keys=False, default_flow_style=False)
+
+    def add_usb_source(
+        self,
+        device: str,
+        name: str,
+        *,
+        fps: int = 15,
+        resolution: str = "1280x720",
+        input_format: str = "",
+        zone_name: str = "Camera FOV",
+    ) -> dict:
+        """Onboard a plugged-in v4l2 device at runtime: persist it, start its ffmpeg
+        relay to MediaMTX, and register the Camera + Zone through the API — the same
+        path a file/config source takes, no service restart. Returns the source
+        status. Raises ValueError on a missing/duplicate/unreadable device."""
+        if not (os.path.exists(device) and os.access(device, os.R_OK)):
+            raise ValueError(f"device {device} not found or not readable")
+        if any(s.url == device for s in self.sources):
+            raise ValueError(f"device {device} is already added")
+        n = re.search(r"(\d+)$", device)
+        path = f"cam_usb{n.group(1) if n else '0'}"
+        if any(s.path == path for s in self.sources):
+            raise ValueError(f"stream path {path} is already in use")
+
+        entry = {
+            "name": name,
+            "type": "usb",
+            "url": device,
+            "path": path,
+            "fps": int(fps),
+            "resolution": resolution,
+            "input_format": input_format,
+            "zone": {"name": zone_name, "type": "general"},
+        }
+        self._persist_source(entry)
+
+        s = Source(
+            name=name,
+            type="usb",
+            url=device,
+            path=path,
+            fps=int(fps),
+            resolution=resolution,
+            zone=entry["zone"],
+            input_format=input_format,
+        )
+        self.sources.append(s)
+        if not self.probe(s):
+            s.status = "unreachable"
+            raise ValueError(f"device {device} could not be opened as a capture source")
+        t = threading.Thread(target=self._run_source, args=(s,), name=f"media-{s.path}", daemon=True)
+        self.threads[s.path] = t
+        t.start()
+        threading.Thread(target=self._register_one, args=(s,), daemon=True).start()
+        log.info("mediasource.usb_added", name=name, device=device, path=path)
+        return self._status_of(s)

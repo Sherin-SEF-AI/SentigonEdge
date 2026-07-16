@@ -7,7 +7,10 @@ const API = "http://localhost:8010";
 const lr = await fetch(`${API}/auth/login`, {
   method: "POST",
   headers: { "Content-Type": "application/json" },
-  body: JSON.stringify({ email: "admin@sentigon.local", password: "changeme123" }),
+  body: JSON.stringify({
+    email: process.env.SENTIGON_ADMIN_EMAIL ?? "admin@sentigon.local",
+    password: process.env.SENTIGON_ADMIN_PASSWORD ?? "",
+  }),
 });
 const auth = await lr.json();
 const stored = JSON.stringify({ token: auth.access_token, user: { email: auth.email, name: auth.name, role: auth.role } });

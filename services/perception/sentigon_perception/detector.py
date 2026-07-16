@@ -52,6 +52,7 @@ class Detector:
             persist=True,
             tracker=settings.tracker,
             device=self.device,
+            half=settings.half,  # FP16 on GPU (was configured but never passed → ran FP32)
             conf=settings.conf,
             iou=settings.iou,
             imgsz=settings.imgsz,

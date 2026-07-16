@@ -42,18 +42,19 @@ export interface IngestSummary {
   mediamtx: string;
 }
 
-async function getJSON<T>(url: string, signal?: AbortSignal): Promise<T> {
-  const res = await fetch(url, { signal, cache: "no-store" });
-  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
-  return (await res.json()) as T;
-}
-
 let _authToken: string | null = null;
 export function setAuthToken(t: string | null): void {
   _authToken = t;
 }
 export function authHeaders(): Record<string, string> {
   return _authToken ? { Authorization: `Bearer ${_authToken}` } : {};
+}
+
+async function getJSON<T>(url: string, signal?: AbortSignal): Promise<T> {
+  // Reads are now authenticated server-side, so send the bearer token like writes do.
+  const res = await fetch(url, { signal, cache: "no-store", headers: { ...authHeaders() } });
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  return (await res.json()) as T;
 }
 
 async function postJSON<T>(url: string, body?: unknown): Promise<T> {
@@ -171,6 +172,20 @@ export const core = {
       `${API_URL}/cameras`,
       signal,
     ),
+  renameCamera: (id: string, name: string) =>
+    fetch(`${API_URL}/cameras/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", ...authHeaders() },
+      body: JSON.stringify({ name }),
+    }).then((r) => {
+      if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
+      return r.json();
+    }),
+  deleteCamera: (id: string) =>
+    fetch(`${API_URL}/cameras/${id}`, { method: "DELETE", headers: { ...authHeaders() } }).then((r) => {
+      if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
+      return r.json() as Promise<{ deleted: string; name: string; objects_removed: number }>;
+    }),
   cases: (signal?: AbortSignal) =>
     getJSON<{ id: string; title: string; status: string; priority: string; incidents: number; created_at: string }[]>(
       `${API_URL}/cases`,
@@ -554,6 +569,41 @@ export const ingest = {
   summary: (signal?: AbortSignal) => getJSON<IngestSummary>(`${INGEST_URL}/health/summary`, signal),
   cameras: (signal?: AbortSignal) => getJSON<unknown[]>(`${INGEST_URL}/cameras`, signal),
   readyz: (signal?: AbortSignal) => getJSON<{ status: string }>(`${INGEST_URL}/readyz`, signal),
+};
+
+// ── Media Source (8055): USB / v4l2 camera scan + onboard ────────────────────
+export const MEDIASOURCE_URL = process.env.NEXT_PUBLIC_MEDIASOURCE_URL ?? "http://localhost:8055";
+
+export interface UsbMode {
+  format: string;
+  resolution: string;
+}
+export interface UsbDevice {
+  device: string;
+  index: number;
+  name: string;
+  capture: boolean;
+  modes: UsbMode[];
+  suggested: UsbMode;
+  registered: boolean;
+}
+export interface UsbAddResult {
+  name: string;
+  path: string;
+  status: string;
+  camera_id: string | null;
+}
+
+export const mediasource = {
+  scanUsb: (signal?: AbortSignal) => getJSON<UsbDevice[]>(`${MEDIASOURCE_URL}/usb/scan`, signal),
+  addUsb: (body: {
+    device: string;
+    name: string;
+    fps?: number;
+    resolution?: string;
+    input_format?: string;
+    zone_name?: string;
+  }) => postJSON<UsbAddResult>(`${MEDIASOURCE_URL}/usb/add`, body),
 };
 
 // ── SOC Dispatch (8081), Fleet Health (8082), Cross-Site (8086) ──────────────

@@ -8,6 +8,7 @@ import contextlib
 from collections.abc import AsyncIterator
 
 from fastapi import FastAPI, Request
+from sentigon_common.auth import install_auth_middleware
 from sentigon_common.health import check_kafka, check_postgres, make_health_router
 from sentigon_common.kafka import run_consumer
 from sentigon_common.logging import configure_logging, get_logger
@@ -60,6 +61,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 
 app = FastAPI(title="Sentigon Context", version="0.1.0", lifespan=lifespan)
+install_auth_middleware(app, protect_reads=True)
 app.include_router(
     make_health_router("context", {"postgres": check_postgres, "kafka": check_kafka})
 )

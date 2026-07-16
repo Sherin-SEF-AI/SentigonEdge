@@ -1,7 +1,7 @@
 {
   "realm": "sentigon",
   "enabled": true,
-  "sslRequired": "none",
+  "sslRequired": "external",
   "accessTokenLifespan": 3600,
   "clients": [
     {
@@ -10,23 +10,12 @@
       "publicClient": true,
       "directAccessGrantsEnabled": true,
       "standardFlowEnabled": true,
-      "redirectUris": ["http://localhost:3001/*"],
-      "webOrigins": ["*"],
+      "redirectUris": ["http://localhost:3001/*", "http://192.168.2.132:3001/*"],
+      "webOrigins": ["http://localhost:3001", "http://192.168.2.132:3001"],
       "protocol": "openid-connect"
     }
   ],
-  "users": [
-    {
-      "username": "sso-operator",
-      "email": "sso-operator@sentigon.local",
-      "firstName": "SSO",
-      "lastName": "Operator",
-      "enabled": true,
-      "emailVerified": true,
-      "credentials": [{ "type": "password", "value": "ssopass123", "temporary": false }],
-      "realmRoles": ["operator"]
-    }
-  ],
+  "users": [],
   "roles": {
     "realm": [
       { "name": "operator" },

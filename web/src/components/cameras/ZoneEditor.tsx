@@ -1,9 +1,9 @@
 "use client";
 
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 
-import { core, ingestSnapshot } from "@/lib/api";
+import { core, ingestSnapshot, mediasource, type UsbDevice } from "@/lib/api";
 import { cn } from "@/lib/cn";
 
 const ZONE_TYPES = ["restricted", "exclusion", "perimeter", "entry", "parking", "loading_dock", "production_floor", "general"];
@@ -18,6 +18,40 @@ export function ZoneEditor() {
   const [zoneType, setZoneType] = useState("restricted");
   const [msg, setMsg] = useState("");
   const imgWrapRef = useRef<HTMLDivElement>(null);
+
+  // USB / v4l2 device scan + onboard (on-demand: user clicks "scan")
+  const usb = useQuery({
+    queryKey: ["usb-scan"],
+    queryFn: ({ signal }) => mediasource.scanUsb(signal),
+    enabled: false,
+  });
+  const [usbNames, setUsbNames] = useState<Record<string, string>>({});
+  const addUsb = useMutation({
+    mutationFn: (d: UsbDevice) =>
+      mediasource.addUsb({
+        device: d.device,
+        name: usbNames[d.device]?.trim() || d.name,
+        resolution: d.suggested.resolution,
+        input_format: d.suggested.format,
+      }),
+    onSuccess: () => {
+      usb.refetch();
+      qc.invalidateQueries({ queryKey: ["api-cameras"] });
+    },
+  });
+
+  const camName = cameras?.find((c) => c.id === active)?.name ?? "";
+  const renameCam = useMutation({
+    mutationFn: ({ id, name }: { id: string; name: string }) => core.renameCamera(id, name),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["api-cameras"] }),
+  });
+  const deleteCam = useMutation({
+    mutationFn: (id: string) => core.deleteCamera(id),
+    onSuccess: () => {
+      setCameraId(null);
+      qc.invalidateQueries({ queryKey: ["api-cameras"] });
+    },
+  });
 
   const active = cameraId ?? cameras?.[0]?.id ?? null;
   const { data: zones } = useQuery({
@@ -75,6 +109,33 @@ export function ZoneEditor() {
             </option>
           ))}
         </select>
+        {active && (
+          <>
+            <button
+              onClick={() => {
+                const n = window.prompt("Rename camera:", camName);
+                if (n && n.trim() && n.trim() !== camName) renameCam.mutate({ id: active, name: n.trim() });
+              }}
+              className="mono rounded-[2px] bg-raised px-2 py-0.5 text-[11px] text-fg-muted hover:text-fg"
+            >
+              rename
+            </button>
+            <button
+              onClick={() => {
+                if (
+                  window.confirm(
+                    `Delete camera "${camName}" and ALL its data (incidents, recordings, footage)? This cannot be undone.`,
+                  )
+                )
+                  deleteCam.mutate(active);
+              }}
+              disabled={deleteCam.isPending}
+              className="mono rounded-[2px] bg-raised px-2 py-0.5 text-[11px] text-red hover:text-fg disabled:opacity-40"
+            >
+              {deleteCam.isPending ? "deleting…" : "delete"}
+            </button>
+          </>
+        )}
         <input
           value={name}
           onChange={(e) => setName(e.target.value)}
@@ -148,7 +209,7 @@ export function ZoneEditor() {
           </div>
         </div>
 
-        <div className="w-56 shrink-0 overflow-auto border-l border-line bg-panel">
+        <div className="w-72 shrink-0 overflow-auto border-l border-line bg-panel">
           <div className="border-b border-line px-3 py-1.5 text-[10px] uppercase tracking-wide text-fg-muted">
             Zones on this camera
           </div>
@@ -168,6 +229,61 @@ export function ZoneEditor() {
             Click on the snapshot to add polygon points (3+). Save to create a real zone; the
             context engine picks it up and trips signatures on objects entering it.
           </div>
+
+          {/* USB / v4l2 device cameras: scan + one-click onboard */}
+          <div className="flex items-center justify-between border-y border-line px-3 py-1.5">
+            <span className="text-[10px] uppercase tracking-wide text-fg-muted">USB / Device Cameras</span>
+            <button
+              onClick={() => usb.refetch()}
+              disabled={usb.isFetching}
+              className="mono rounded-[2px] bg-raised px-2 py-0.5 text-[10px] text-cyan hover:text-fg disabled:opacity-40"
+            >
+              {usb.isFetching ? "scanning…" : usb.data ? "rescan" : "scan"}
+            </button>
+          </div>
+          {usb.data === undefined ? (
+            <div className="px-3 py-2 text-[11px] text-fg-muted">
+              Click “scan” to detect plugged-in USB / v4l2 cameras.
+            </div>
+          ) : usb.data.length === 0 ? (
+            <div className="px-3 py-2 text-[11px] text-fg-muted">No /dev/video* devices found.</div>
+          ) : (
+            usb.data.map((d) => (
+              <div key={d.device} className="border-b border-line-soft px-3 py-1.5">
+                <div className="truncate text-[12px] text-fg" title={d.name}>
+                  {d.name}
+                </div>
+                <div className="mono text-[10px] text-fg-muted">
+                  {d.device} · {d.capture ? `${d.suggested.format || "auto"} ${d.suggested.resolution}` : "no capture modes"}
+                </div>
+                {d.registered ? (
+                  <div className="mono mt-1 text-[10px] text-green">✓ added</div>
+                ) : d.capture ? (
+                  <div className="mt-1 flex items-center gap-1">
+                    <input
+                      value={usbNames[d.device] ?? ""}
+                      onChange={(e) => setUsbNames((m) => ({ ...m, [d.device]: e.target.value }))}
+                      placeholder={d.name}
+                      className="min-w-0 flex-1 rounded-[3px] border border-line bg-base px-1.5 py-0.5 text-[11px] text-fg outline-none placeholder:text-fg-muted"
+                    />
+                    <button
+                      onClick={() => addUsb.mutate(d)}
+                      disabled={addUsb.isPending}
+                      className="mono rounded-[2px] bg-raised px-2 py-0.5 text-[10px] text-cyan hover:text-fg disabled:opacity-40"
+                    >
+                      add
+                    </button>
+                  </div>
+                ) : null}
+              </div>
+            ))
+          )}
+          {addUsb.isError && (
+            <div className="mono px-3 py-1 text-[10px] text-red">{String(addUsb.error)}</div>
+          )}
+          {addUsb.isSuccess && (
+            <div className="mono px-3 py-1 text-[10px] text-green">camera added — appears on the wall once frames flow.</div>
+          )}
         </div>
       </div>
     </div>

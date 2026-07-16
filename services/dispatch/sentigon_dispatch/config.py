@@ -21,6 +21,8 @@ class DispatchSettings(BaseSettings):
 
     # Only dispatch responders for high/critical confirmed incidents.
     min_severity: str = "high"
+    # Timezone for on-call shift resolution (shift hours are authored site-local).
+    dispatch_timezone: str = "UTC"
     # SLA windows (seconds): ack breach escalates up the tier; resolve breach expires.
     sla_ack_seconds: int = 300
     sla_resolve_seconds: int = 1800

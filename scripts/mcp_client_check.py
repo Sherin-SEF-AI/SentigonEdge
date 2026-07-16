@@ -27,30 +27,32 @@ def _short(result) -> str:
 
 
 async def main() -> int:
-    async with streamablehttp_client(URL) as (read, write, _):
-        async with ClientSession(read, write) as session:
-            await session.initialize()
+    async with (
+        streamablehttp_client(URL) as (read, write, _),
+        ClientSession(read, write) as session,
+    ):
+        await session.initialize()
 
-            tools = (await session.list_tools()).tools
-            print(f"connected. server advertises {len(tools)} tools:")
-            for t in tools:
-                print(f"  - {t.name}: {t.description or ''[:60]}")
+        tools = (await session.list_tools()).tools
+        print(f"connected. server advertises {len(tools)} tools:")
+        for t in tools:
+            print(f"  - {t.name}: {t.description or ''[:60]}")
+        print()
+
+        calls = [
+            ("incident_summary", {}),
+            ("search_incidents", {"severity": "critical", "limit": 3}),
+            ("semantic_search", {"query": "person near restricted area", "limit": 3}),
+            ("verify_evidence", {}),
+        ]
+        for name, args in calls:
+            try:
+                res = await session.call_tool(name, args)
+                print(f"call {name}({json.dumps(args)}) ->")
+                print(f"    {_short(res)}")
+            except Exception as exc:  # noqa: BLE001
+                print(f"call {name} FAILED: {exc}")
             print()
-
-            calls = [
-                ("incident_summary", {}),
-                ("search_incidents", {"severity": "critical", "limit": 3}),
-                ("semantic_search", {"query": "person near restricted area", "limit": 3}),
-                ("verify_evidence", {}),
-            ]
-            for name, args in calls:
-                try:
-                    res = await session.call_tool(name, args)
-                    print(f"call {name}({json.dumps(args)}) ->")
-                    print(f"    {_short(res)}")
-                except Exception as exc:  # noqa: BLE001
-                    print(f"call {name} FAILED: {exc}")
-                print()
     return 0
 
 

@@ -22,8 +22,11 @@ def make_ack_token(incident_id: str) -> str:
     return hmac.new(settings.ack_secret.encode(), incident_id.encode(), hashlib.sha256).hexdigest()[:24]
 
 
-def ack_url(incident_id: str, notify_base: str = "http://localhost:8070") -> str:
-    return f"{notify_base}/ack/{incident_id}?token={make_ack_token(incident_id)}"
+def ack_url(incident_id: str, notify_base: str | None = None) -> str:
+    # public, recipient-reachable base (emails/webhooks go outside the host); the
+    # old hardcoded localhost link was unreachable for the actual recipient.
+    base = (notify_base or settings.notify_public_base_url).rstrip("/")
+    return f"{base}/ack/{incident_id}?token={make_ack_token(incident_id)}"
 
 _SEV_ORDER = {"info": 0, "low": 1, "medium": 2, "high": 3, "critical": 4}
 
@@ -32,20 +35,46 @@ def severity_meets(sev: str, minimum: str) -> bool:
     return _SEV_ORDER.get(sev, 0) >= _SEV_ORDER.get(minimum, 0)
 
 
-def send_email(subject: str, body: str) -> tuple[bool, str]:
+def send_email(subject: str, body: str, to: str | None = None) -> tuple[bool, str]:
+    """Send to `to` (the resolved on-call responder) or fall back to the global
+    email_to. Header fields are CR/LF-stripped to prevent header injection."""
+    recipient = to or settings.email_to
     if not settings.smtp_host:
         return False, "smtp not configured"
+    if not recipient:
+        return False, "no recipient"
     try:
         msg = EmailMessage()
-        msg["From"] = settings.email_from
-        msg["To"] = settings.email_to
-        msg["Subject"] = subject
+        msg["From"] = _strip_header(settings.email_from)
+        msg["To"] = _strip_header(recipient)
+        msg["Subject"] = _strip_header(subject)
         msg.set_content(body)
         with smtplib.SMTP(settings.smtp_host, settings.smtp_port, timeout=10) as s:
             s.send_message(msg)
         return True, "sent"
     except Exception as exc:  # noqa: BLE001
         log.exception("notify.email_failed")
+        return False, str(exc)
+
+
+def _strip_header(value: str) -> str:
+    return value.replace("\r", " ").replace("\n", " ").strip()
+
+
+async def send_sms(to: str, body: str) -> tuple[bool, str]:
+    """Generic SMS via an operator-provided HTTP gateway (Twilio-compatible webhook,
+    a corporate SMS relay, etc.): POST {to, body} to sms_webhook_url. Real transport,
+    not a stub — point sms_webhook_url at your gateway."""
+    if not settings.sms_webhook_url:
+        return False, "sms gateway not configured"
+    if not to:
+        return False, "no sms recipient"
+    try:
+        async with httpx.AsyncClient(timeout=8.0) as c:
+            r = await c.post(settings.sms_webhook_url, json={"to": to, "body": body})
+            return (r.status_code < 400, f"http {r.status_code}")
+    except Exception as exc:  # noqa: BLE001
+        log.exception("notify.sms_failed")
         return False, str(exc)
 
 

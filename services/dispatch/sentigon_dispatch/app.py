@@ -14,7 +14,7 @@ from datetime import UTC, datetime
 
 from fastapi import Body, Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from sentigon_common.auth import is_writer, user_from_token
+from sentigon_common.auth import install_auth_middleware, is_writer, user_from_token
 from sentigon_common.config import settings as common_settings
 from sentigon_common.db import async_session_factory
 from sentigon_common.db.models import (
@@ -33,7 +33,6 @@ from sentigon_common.schemas.enums import DispatchState
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .config import settings
 from .engine import DispatchEngine
 from .sla import SlaSweeper
 
@@ -70,7 +69,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 
 app = FastAPI(title="Sentigon Dispatch", version="0.1.0", lifespan=lifespan)
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+app.add_middleware(CORSMiddleware, allow_origins=common_settings.cors_origin_list, allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
+install_auth_middleware(app, protect_reads=True)
 app.include_router(make_health_router("dispatch", {"postgres": check_postgres, "kafka": check_kafka}))
 mount_metrics(app)
 

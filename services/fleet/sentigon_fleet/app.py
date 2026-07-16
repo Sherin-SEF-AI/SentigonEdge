@@ -8,6 +8,8 @@ from collections.abc import AsyncIterator
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from sentigon_common.auth import install_auth_middleware
+from sentigon_common.config import settings as common_settings
 from sentigon_common.db import async_session_factory
 from sentigon_common.db.models import FleetFinding, FleetSnapshot
 from sentigon_common.health import check_postgres, make_health_router
@@ -47,7 +49,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 
 app = FastAPI(title="Sentigon Fleet", version="0.1.0", lifespan=lifespan)
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+app.add_middleware(CORSMiddleware, allow_origins=common_settings.cors_origin_list, allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
+install_auth_middleware(app, protect_reads=True)
 app.include_router(make_health_router("fleet", {"postgres": check_postgres}))
 
 

@@ -14,6 +14,7 @@ import orjson
 from aiokafka import AIOKafkaConsumer, AIOKafkaProducer
 from aiokafka.admin import AIOKafkaAdminClient, NewTopic
 from aiokafka.errors import TopicAlreadyExistsError
+from aiokafka.structs import OffsetAndMetadata, TopicPartition
 from pydantic import BaseModel
 
 from .config import settings
@@ -103,6 +104,20 @@ async def ensure_topics(
 Handler = Callable[[dict, str | None], Awaitable[None]]
 
 
+async def _to_dead_letter(producer: AIOKafkaProducer | None, msg) -> bool:
+    """Publish a poison message verbatim to `<topic>.dlq`. Returns success."""
+    if producer is None:
+        return False
+    try:
+        await producer.send_and_wait(
+            f"{msg.topic}.dlq", value=msg.value, key=msg.key, headers=msg.headers
+        )
+        return True
+    except Exception:
+        log.exception("consumer.dlq_publish_failed", topic=msg.topic, offset=msg.offset)
+        return False
+
+
 async def run_consumer(
     topics: Sequence[str],
     group_id: str,
@@ -110,12 +125,19 @@ async def run_consumer(
     *,
     stop_event: asyncio.Event | None = None,
     auto_offset_reset: str = "earliest",
+    max_retries: int = 3,
+    dead_letter: bool = True,
 ) -> None:
-    """At-least-once consumer loop.
+    """At-least-once consumer loop with explicit per-message offset commits.
 
-    The handler is invoked with (decoded_dict, correlation_id). Offsets commit only
-    after the handler returns, so a crash mid-handling replays the message. Handlers
-    must therefore be idempotent.
+    The handler is invoked with (decoded_dict, correlation_id). Only the *specific*
+    offset of a successfully-handled message is committed (never the partition
+    high-water mark), so a failing message can never be skipped by a later success.
+    On failure the message is retried with backoff up to ``max_retries``; if it
+    still fails it is routed to ``<topic>.dlq`` and committed past (so one poison
+    message cannot wedge the partition). If the DLQ itself is unreachable the offset
+    is left uncommitted and the message replays — no event is ever silently lost.
+    Handlers must still be idempotent (a redelivery after a crash mid-handling).
     """
     consumer = AIOKafkaConsumer(
         *topics,
@@ -126,6 +148,15 @@ async def run_consumer(
         auto_offset_reset=auto_offset_reset,
     )
     await consumer.start()
+    dlq_producer: AIOKafkaProducer | None = None
+    if dead_letter:
+        dlq_producer = AIOKafkaProducer(
+            bootstrap_servers=settings.kafka_bootstrap,
+            client_id=f"{settings.kafka_client_id}-{group_id}-dlq",
+            enable_idempotence=True,
+            acks="all",
+        )
+        await dlq_producer.start()
     log.info("consumer.started", topics=list(topics), group=group_id)
     try:
         async for msg in consumer:
@@ -134,17 +165,61 @@ async def run_consumer(
                 if k == _HEADER_CORRELATION and v:
                     cid = v.decode()
             set_correlation_id(cid)
+
+            tp = TopicPartition(msg.topic, msg.partition)
+            # commit offset+1: the next offset to consume after this message
+            commit = {tp: OffsetAndMetadata(msg.offset + 1, "")}
+
+            # 1. decode — an unparseable body is a poison pill, never retryable
             try:
                 payload = orjson.loads(msg.value)
-                await handler(payload, cid)
-                await consumer.commit()
             except Exception:
-                log.exception("consumer.handler_error", topic=msg.topic, offset=msg.offset)
-                # do not commit: message replays on restart
+                log.exception("consumer.decode_error", topic=msg.topic, offset=msg.offset)
+                if await _to_dead_letter(dlq_producer, msg):
+                    await consumer.commit(commit)
+                else:
+                    consumer.seek(tp, msg.offset)
+                    await asyncio.sleep(5)
                 if stop_event is not None and stop_event.is_set():
                     break
+                continue
+
+            # 2. handle with bounded retry + backoff
+            handled = False
+            for attempt in range(1, max_retries + 1):
+                try:
+                    await handler(payload, cid)
+                    handled = True
+                    break
+                except Exception:
+                    log.exception(
+                        "consumer.handler_error",
+                        topic=msg.topic,
+                        offset=msg.offset,
+                        attempt=attempt,
+                        max_retries=max_retries,
+                    )
+                    if stop_event is not None and stop_event.is_set():
+                        break
+                    if attempt < max_retries:
+                        await asyncio.sleep(min(2**attempt, 30))
+
+            # 3. commit the exact offset on success; DLQ-or-replay on exhaustion
+            if handled:
+                await consumer.commit(commit)
+            elif await _to_dead_letter(dlq_producer, msg):
+                await consumer.commit(commit)
+                log.error("consumer.dead_lettered", topic=msg.topic, offset=msg.offset)
+            else:
+                # cannot advance without losing the message: replay it, don't commit
+                consumer.seek(tp, msg.offset)
+                log.error("consumer.dlq_unavailable_replaying", topic=msg.topic, offset=msg.offset)
+                await asyncio.sleep(5)
+
             if stop_event is not None and stop_event.is_set():
                 break
     finally:
         await consumer.stop()
+        if dlq_producer is not None:
+            await dlq_producer.stop()
         log.info("consumer.stopped", group=group_id)

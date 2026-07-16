@@ -8,6 +8,7 @@ without either side ever needing to store the raw string (DPDP-style handling).
 from __future__ import annotations
 
 import hashlib
+import hmac
 import re
 
 from .config import settings
@@ -21,5 +22,13 @@ def normalize_plate(raw: str) -> str:
 
 
 def plate_hash(text: str) -> str:
-    """Salted SHA-256 (truncated) of a normalized plate, for storage/matching."""
-    return hashlib.sha256(f"{settings.anpr_salt}:{normalize_plate(text)}".encode()).hexdigest()[:32]
+    """Keyed HMAC-SHA256 (truncated) of a normalized plate, for storage/matching.
+
+    ``anpr_salt`` is the secret HMAC KEY, not a public prefix: with a plain
+    ``sha256(salt:plate)`` an attacker who learns the (committed-by-default) salt
+    reverses the whole small plate keyspace in seconds. As an HMAC key the salt must
+    stay secret and non-default — the production settings guard rejects the default.
+    Both perception (reader) and api (enroller) call this, so hashes match."""
+    return hmac.new(
+        settings.anpr_salt.encode(), normalize_plate(text).encode(), hashlib.sha256
+    ).hexdigest()[:32]

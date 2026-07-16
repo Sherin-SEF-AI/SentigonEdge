@@ -39,9 +39,13 @@ class NotifySettings(BaseSettings):
     oncall_schedule: str = "0-8:night-soc@sentigon.local,8-20:day-soc@sentigon.local,20-24:night-soc@sentigon.local"
     ack_secret: str = "change-me-ack-secret"
     api_url: str = "http://localhost:8010"
+    # public, recipient-reachable base for ack links in emails/webhooks (not localhost)
+    notify_public_base_url: str = "http://localhost:8070"
 
     # real adapters, unconfigured until credentials supplied (never fake-send)
     sms_provider: str = ""
+    # SMS via a generic HTTP gateway: POST {"to","body"} here (Twilio-compatible relay)
+    sms_webhook_url: str = ""
     # Web push (VAPID). The private key is a base64-encoded PKCS8 PEM; the public
     # key is the base64url application-server key the browser subscribes with.
     webpush_vapid_key: str = ""  # private (b64 PEM)

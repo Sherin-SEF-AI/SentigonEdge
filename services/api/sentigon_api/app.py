@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import time
 import uuid
 from datetime import UTC, datetime, timedelta
 
@@ -13,9 +14,11 @@ from fastapi.responses import JSONResponse
 from prometheus_client.core import REGISTRY, GaugeMetricFamily
 from pydantic import BaseModel, Field
 from sentigon_common.auth import (
+    cors_headers_for,
     create_access_token,
     hash_password,
     is_writer,
+    secure_compare,
     user_from_token,
     verify_password,
 )
@@ -46,6 +49,7 @@ from sentigon_common.db.models import (
 from sentigon_common.health import check_postgres, make_health_router
 from sentigon_common.logging import configure_logging, get_logger
 from sentigon_common.metrics import mount_metrics
+from sentigon_common.redact import redact_url_credentials
 from sentigon_common.risk import compute_risk_score, priority_band
 from sentigon_common.schemas.enums import (
     AccessEventType,
@@ -59,7 +63,7 @@ from sentigon_common.schemas.enums import (
 )
 from sentigon_common.storage import get_store
 from sentigon_common.vault import append_evidence, verify_chain
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 
 log = get_logger("api")
 configure_logging("api")
@@ -73,7 +77,13 @@ if not common_settings.jwt_secret_key or len(common_settings.jwt_secret_key) < 1
     )
 
 app = FastAPI(title="Sentigon Core API", version="0.1.0")
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=common_settings.cors_origin_list,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 app.include_router(make_health_router("api", {"postgres": check_postgres}))
 
 _store = get_store()
@@ -130,25 +140,46 @@ REGISTRY.register(_SentigonCollector())
 mount_metrics(app)
 
 _WRITE_METHODS = {"POST", "PATCH", "PUT", "DELETE"}
-_AUTH_EXEMPT = {"/auth/login"}
+# Paths reachable without a token. Everything else — including all reads (which
+# expose incidents, snapshots, badge PII, RTSP URIs) — now requires viewer+.
+_PUBLIC_PATHS = {"/auth/login", "/healthz", "/readyz", "/metrics", "/docs", "/openapi.json"}
+
+
+def _bearer_token(request: Request) -> str | None:
+    auth = request.headers.get("authorization", "")
+    return auth[7:].strip() if auth.lower().startswith("bearer ") else None
 
 
 @app.middleware("http")
 async def rbac(request: Request, call_next):  # noqa: ANN001, ANN201
-    """RBAC: mutating requests require a writer (operator+) JWT or the internal
-    service token. Reads are open to the console."""
-    if request.method in _WRITE_METHODS and request.url.path not in _AUTH_EXEMPT:
-        svc = request.headers.get("x-service-token")
-        if not (svc and svc == common_settings.service_token):
-            auth = request.headers.get("authorization", "")
-            token = auth[7:].strip() if auth.lower().startswith("bearer ") else None
-            user = await user_from_token(token)
-            if user is None:
-                return JSONResponse({"detail": "authentication required"}, status_code=401)
-            if not is_writer(user):
-                return JSONResponse(
-                    {"detail": "insufficient role (operator+ required)"}, status_code=403
-                )
+    """Authenticate every request. Reads require a viewer+ JWT (or the internal
+    service token); writes require operator+. Identity is resolved once and
+    stashed on request.state for handlers and _allowed_sites. CORS preflight and
+    a small public allowlist (login/health/metrics/docs) are exempt."""
+    request.state.user = None
+    request.state.service = False
+    path = request.url.path
+    if request.method == "OPTIONS" or path in _PUBLIC_PATHS or path.startswith("/health"):
+        return await call_next(request)
+
+    service_ok = secure_compare(request.headers.get("x-service-token"), common_settings.service_token)
+    user = None if service_ok else await user_from_token(_bearer_token(request))
+    request.state.user = user
+    request.state.service = service_ok
+
+    if not service_ok:
+        if user is None:
+            return JSONResponse(
+                {"detail": "authentication required"},
+                status_code=401,
+                headers=cors_headers_for(request),
+            )
+        if request.method in _WRITE_METHODS and not is_writer(user):
+            return JSONResponse(
+                {"detail": "insufficient role (operator+ required)"},
+                status_code=403,
+                headers=cors_headers_for(request),
+            )
     return await call_next(request)
 
 
@@ -157,13 +188,35 @@ class LoginIn(BaseModel):
     password: str
 
 
+# Per-IP login throttle (in-process; one API instance per box on the Orin). A
+# fixed dummy bcrypt hash is verified for unknown emails so response time does not
+# reveal whether an account exists (removes the enumeration timing oracle).
+_LOGIN_MAX = 10
+_LOGIN_WINDOW_S = 60.0
+_login_hits: dict[str, list[float]] = {}
+_DUMMY_HASH = hash_password("sentigon-timing-equalizer")
+
+
+def _login_rate_limited(ip: str) -> bool:
+    now = time.monotonic()
+    hits = [t for t in _login_hits.get(ip, []) if now - t < _LOGIN_WINDOW_S]
+    hits.append(now)
+    _login_hits[ip] = hits
+    return len(hits) > _LOGIN_MAX
+
+
 @app.post("/auth/login")
-async def login(payload: LoginIn) -> dict:
+async def login(payload: LoginIn, request: Request) -> dict:
+    if _login_rate_limited(request.client.host if request.client else "unknown"):
+        raise HTTPException(429, "too many login attempts, slow down")
     async with async_session_factory() as session:
         user = (
             await session.execute(select(User).where(User.email == payload.email))
         ).scalar_one_or_none()
-    if user is None or not verify_password(payload.password, user.hashed_password):
+    if user is None:
+        verify_password(payload.password, _DUMMY_HASH)  # equalize timing
+        raise HTTPException(401, "invalid credentials")
+    if not verify_password(payload.password, user.hashed_password):
         raise HTTPException(401, "invalid credentials")
     return {
         "access_token": create_access_token(str(user.id), user.role.value),
@@ -817,18 +870,41 @@ async def list_sites() -> list[dict]:
 
 
 async def _allowed_sites(request: Request) -> list[uuid.UUID] | None:
-    """Site-scope enforcement. Returns the site_ids a request's user may see, or
-    None for admins / unscoped tokens / anonymous console reads (see all). A
-    site-scoped operator is restricted to their sites at the API, not just the UI."""
-    auth = request.headers.get("authorization", "")
-    token = auth[7:].strip() if auth.lower().startswith("bearer ") else None
-    user = await user_from_token(token)
-    if user is None or user.role == UserRole.ADMIN:
+    """Site-scope enforcement. Returns the site_ids the request may see, or None
+    for full scope (admins, unscoped operators, the internal service token).
+
+    Identity is taken from request.state (resolved once by the rbac middleware).
+    Fails CLOSED: a request with no authenticated user resolves to an empty scope
+    (see nothing), never full scope — the previous version treated anonymous the
+    same as admin, so dropping the token granted MORE access than a scoped token."""
+    if getattr(request.state, "service", False):
+        return None
+    user = getattr(request.state, "user", None)
+    if user is None:
+        return []  # unreachable behind rbac, but never fail open
+    if user.role == UserRole.ADMIN:
         return None
     sites = (user.site_scope or {}).get("sites")
     if not sites:
         return None
     return [uuid.UUID(str(s)) for s in sites]
+
+
+def _current_user(request: Request) -> User | None:
+    return getattr(request.state, "user", None)
+
+
+def _require_role(request: Request, *roles: UserRole) -> None:
+    """Enforce a minimum role for actions stricter than the middleware baseline
+    (operator+). The internal service token is trusted; ADMIN passes any check.
+    Identity comes from request.state (resolved once by the rbac middleware)."""
+    if getattr(request.state, "service", False):
+        return
+    user = getattr(request.state, "user", None)
+    if user is None:
+        raise HTTPException(401, "authentication required")
+    if user.role != UserRole.ADMIN and user.role not in roles:
+        raise HTTPException(403, f"requires role {[r.value for r in roles]}")
 
 
 @app.get("/cameras")
@@ -843,12 +919,114 @@ async def list_cameras(request: Request) -> list[dict]:
         {
             "id": str(c.id),
             "name": c.name,
-            "rtsp_uri": c.rtsp_uri,
+            "rtsp_uri": redact_url_credentials(c.rtsp_uri),
             "status": c.status.value,
             "map": (c.meta or {}).get("map"),
         }
         for c in cams
     ]
+
+
+class CameraPatch(BaseModel):
+    name: str | None = None
+    fps: int | None = None
+    resolution: str | None = None
+
+
+@app.patch("/cameras/{camera_id}")
+async def patch_camera(camera_id: uuid.UUID, payload: CameraPatch, request: Request) -> dict:
+    """Rename / retune a camera (operator+). Renames are safe: media-source matches
+    its config to cameras by RTSP path, not name, so no duplicate is created."""
+    async with async_session_factory() as session:
+        cam = await session.get(Camera, camera_id)
+        if cam is None:
+            raise HTTPException(404, "camera not found")
+        if payload.name is not None and payload.name.strip():
+            cam.name = payload.name.strip()
+        if payload.fps is not None:
+            cam.fps = payload.fps
+        if payload.resolution is not None:
+            cam.resolution = payload.resolution
+        session.add(
+            AuditLogEntry(
+                action="camera.updated",
+                resource_type="camera",
+                resource_id=str(camera_id),
+                details={"name": cam.name},
+            )
+        )
+        await session.commit()
+        return {"id": str(cam.id), "name": cam.name, "fps": cam.fps, "resolution": cam.resolution}
+
+
+def _ref_pair(ref: str | None) -> tuple[str, str] | None:
+    return tuple(ref.split("/", 1)) if ref and "/" in ref else None  # type: ignore[return-value]
+
+
+@app.delete("/cameras/{camera_id}")
+async def delete_camera(camera_id: uuid.UUID, request: Request) -> dict:
+    """Permanently delete a camera AND all its data — events, incidents, recordings,
+    and their object-storage objects — then de-register its media source + stop its
+    ingest worker. Destroys evidence, so admin only."""
+    import httpx
+
+    _require_role(request, UserRole.ADMIN)
+    async with async_session_factory() as session:
+        cam = await session.get(Camera, camera_id)
+        if cam is None:
+            raise HTTPException(404, "camera not found")
+        name = cam.name
+        objs: set[tuple[str, str]] = set()
+        for b, k in (
+            await session.execute(
+                select(Recording.bucket, Recording.object_key).where(Recording.camera_id == camera_id)
+            )
+        ).all():
+            if b and k:
+                objs.add((b, k))
+        for tbl in (Event, Incident):
+            for snap, clip in (
+                await session.execute(
+                    select(tbl.snapshot_ref, tbl.clip_ref).where(tbl.camera_id == camera_id)
+                )
+            ).all():
+                for p in (_ref_pair(snap), _ref_pair(clip)):
+                    if p:
+                        objs.add(p)
+        # zones are SET NULL on camera delete (not removed), so drop them explicitly;
+        # then delete the camera — the DB cascades events/incidents/recordings.
+        await session.execute(delete(Zone).where(Zone.camera_id == camera_id))
+        await session.execute(delete(Camera).where(Camera.id == camera_id))
+        session.add(
+            AuditLogEntry(
+                action="camera.deleted",
+                resource_type="camera",
+                resource_id=str(camera_id),
+                details={"name": name, "objects": len(objs)},
+            )
+        )
+        await session.commit()
+
+    removed = 0
+    for b, k in objs:
+        try:
+            await asyncio.to_thread(_store.remove, b, k)
+            removed += 1
+        except Exception:  # noqa: BLE001
+            pass
+
+    # best-effort: drop the media source (so it isn't re-created) and stop the worker
+    async with httpx.AsyncClient(
+        timeout=8.0, headers={"X-Service-Token": common_settings.service_token}
+    ) as c:
+        for coro in (
+            c.delete(f"{common_settings.mediasource_url}/sources/by-camera/{camera_id}"),
+            c.post(f"{common_settings.ingest_url}/cameras/{camera_id}/stop"),
+        ):
+            with contextlib.suppress(Exception):
+                await coro
+
+    return {"deleted": str(camera_id), "name": name, "objects_removed": removed}
 
 
 # ── zones (ROI editor) ────────────────────────────────────────
@@ -1361,9 +1539,13 @@ class ScheduleIn(BaseModel):
 
 
 @app.post("/schedules", status_code=201)
-async def create_schedule(payload: ScheduleIn) -> dict:
+async def create_schedule(payload: ScheduleIn, request: Request) -> dict:
     """Define an expected-activity window that suppresses matching alarms (a scheduled
     dock delivery or nightly cleaning crew does not alarm during its window)."""
+    # A window with no camera/zone/signature scope suppresses ALL alarms globally —
+    # that blinds the platform, so require admin. Scoped windows: investigator+.
+    is_global = not payload.camera_id and not payload.zone_id and not payload.signatures
+    _require_role(request, UserRole.ADMIN if is_global else UserRole.INVESTIGATOR)
     async with async_session_factory() as session:
         s = ScheduleWindow(
             name=payload.name, reason=payload.reason,
@@ -1652,10 +1834,13 @@ async def list_signatures(
 @app.patch("/signatures/{signature_id}")
 async def patch_signature(
     signature_id: uuid.UUID,
+    request: Request,
     enabled: bool | None = Body(None, embed=True),
     severity: str | None = Body(None, embed=True),
     params: dict | None = Body(None, embed=True),
 ) -> dict:
+    # detection-integrity change (disabling/retuning a signature) — investigator+
+    _require_role(request, UserRole.INVESTIGATOR)
     async with async_session_factory() as session:
         sig = await session.get(Signature, signature_id)
         if sig is None:
@@ -1914,12 +2099,11 @@ async def add_case_incidents(
 
 @app.get("/cases/{case_id}/export")
 async def export_case(case_id: uuid.UUID, request: Request) -> dict:
-    """Chain-of-custody export: the case, its incidents, and the evidence hash manifest."""
-    actor = await user_from_token(
-        (request.headers.get("authorization", "")[7:].strip() or None)
-        if request.headers.get("authorization", "").lower().startswith("bearer ")
-        else None
-    )
+    """Chain-of-custody export: the case, its incidents, and the evidence hash manifest.
+    Seals evidence into the append-only ledger, so it requires investigator+ and
+    attributes the actor from the authenticated identity (never 'anonymous')."""
+    _require_role(request, UserRole.INVESTIGATOR)
+    actor = _current_user(request)
     async with async_session_factory() as session:
         case = await session.get(Case, case_id)
         if case is None:
@@ -2286,12 +2470,30 @@ async def list_models() -> list[dict]:
 
 
 @app.post("/models/{model_id}/promote")
-async def promote_model(model_id: uuid.UUID) -> dict:
-    """Atomically promote a model to champion, retiring the current champion of its role."""
+async def promote_model(model_id: uuid.UUID, request: Request, force: bool = False) -> dict:
+    """Atomically promote a model to champion, retiring the current champion of its
+    role. Champion-challenger gate: promotion is blocked unless the model has a
+    passing eval run, so an unvalidated challenger cannot reach production. An admin
+    may override with force=true (audited) for an emergency rollback."""
+    _require_role(request, UserRole.ADMIN)
     async with async_session_factory() as session:
         mv = await session.get(ModelVersion, model_id)
         if mv is None:
             raise HTTPException(404, "model not found")
+        latest_eval = (
+            await session.execute(
+                select(EvalRun)
+                .where(EvalRun.model_version_id == mv.id)
+                .order_by(EvalRun.created_at.desc())
+                .limit(1)
+            )
+        ).scalars().first()
+        if not force and (latest_eval is None or not latest_eval.passed):
+            raise HTTPException(
+                409,
+                "promotion blocked: model has no passing eval run (champion-challenger "
+                "gate). Run an eval that passes, or pass force=true to override.",
+            )
         current = (
             await session.execute(
                 select(ModelVersion).where(
@@ -2309,7 +2511,12 @@ async def promote_model(model_id: uuid.UUID) -> dict:
                 action="model.promoted",
                 resource_type="model_version",
                 resource_id=str(mv.id),
-                details={"name": mv.name, "role": mv.role.value},
+                details={
+                    "name": mv.name,
+                    "role": mv.role.value,
+                    "forced": force,
+                    "eval_passed": bool(latest_eval and latest_eval.passed),
+                },
             )
         )
         await session.commit()

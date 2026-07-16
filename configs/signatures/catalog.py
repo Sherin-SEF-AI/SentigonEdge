@@ -575,4 +575,31 @@ THREAT_SIGNATURES: List[ThreatSignatureDef] = [
         "Camera avoidance behavior - face turned away, erratic direction changes",
         yolo_classes=["person"], conditions={"pose_evasive": True, "dwell_time_min": 5},
         gemini_keywords=["evasive", "avoiding camera", "turning away", "erratic movement"]),
+
+    # ================================================================
+    # Runtime signatures the context/reason engines emit directly.
+    # These have real detectors in code (watchlist.py, fall.py, the
+    # anomaly/handoff/access-fusion paths in engine.py, NL alerts in
+    # reason). They MUST be seeded or context._fire() drops them.
+    # Category drives risk.py weighting; keep it accurate.
+    # ================================================================
+    ThreatSignatureDef("Watchlist Hit", "watchlist", "high", "hybrid",
+        "Live appearance match against a watchlist (BOLO) entry"),
+    ThreatSignatureDef("Plate Watchlist Hit", "watchlist", "high", "hybrid",
+        "Live license-plate match against a plate watchlist entry"),
+    ThreatSignatureDef("Person Fall", "safety", "high", "hybrid",
+        "Person collapsed / fallen, detected from pose",
+        yolo_classes=["person"]),
+    ThreatSignatureDef("Anomalous Activity", "suspicious", "medium", "hybrid",
+        "Zone activity deviates from its learned per-zone baseline"),
+    ThreatSignatureDef("Cross-Camera Handoff", "tracking", "info", "hybrid",
+        "Same subject re-identified across cameras (context, not itself a threat)"),
+    ThreatSignatureDef("Verified Forced Door", "intrusion", "critical", "hybrid",
+        "Door-forced access event corroborated by a person present on video"),
+    ThreatSignatureDef("Invalid Badge Followed By Tailgating", "intrusion", "high", "hybrid",
+        "Denied badge read immediately followed by a tailgating entry"),
+    ThreatSignatureDef("Invalid Badge with Loitering", "intrusion", "medium", "hybrid",
+        "Denied badge read with a person loitering at the access point"),
+    ThreatSignatureDef("Custom Activity Alert", "suspicious", "medium", "hybrid",
+        "Operator-defined natural-language alert evaluated by the VLM"),
 ]

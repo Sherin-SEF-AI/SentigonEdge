@@ -10,6 +10,7 @@ from collections.abc import AsyncIterator
 import httpx
 from fastapi import Body, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from sentigon_common.auth import install_auth_middleware
 from sentigon_common.config import settings as common_settings
 from sentigon_common.health import check_kafka, check_postgres, make_health_router
 from sentigon_common.kafka import run_consumer
@@ -66,7 +67,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 
 app = FastAPI(title="Sentigon Notify", version="0.1.0", lifespan=lifespan)
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+app.add_middleware(CORSMiddleware, allow_origins=common_settings.cors_origin_list, allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
+# /ack uses its own signed token; /push/vapid returns only the public VAPID key
+install_auth_middleware(app, protect_reads=True, public_paths={"/ack", "/push/vapid"})
 app.include_router(make_health_router("notify", {"postgres": check_postgres, "kafka": check_kafka}))
 
 
@@ -110,7 +113,8 @@ async def stats(request: Request) -> dict:
     return {
         "channels": channel_status(),
         "email_to": settings.email_to,
-        "webhook_url": settings.webhook_url,
+        # never return the webhook URL — it embeds a Slack/Teams/PagerDuty secret
+        "webhook_configured": bool(settings.webhook_url),
         "min_severity": settings.min_severity,
         "oncall_now": oncall_contact(),
         "escalation": request.app.state.escalator.stats,

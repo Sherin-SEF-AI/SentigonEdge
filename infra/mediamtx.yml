@@ -11,6 +11,10 @@ logDestinations: [stdout]
 # localhost-only rule for the api/metrics actions would 401 the ingest service and
 # host tooling. Lock this down (per-user creds, IP allowlists) for any real deploy.
 authInternalUsers:
+  # pprof (the Go profiler — memory dumps / goroutine traces) is removed: it must
+  # never be reachable. api/metrics stay on the wildcard user because the ingest
+  # service calls the control API unauthenticated over the bridge network; for full
+  # lockdown, give ingest credentials and move api/metrics to an authenticated user.
   - user: any
     pass:
     permissions:
@@ -19,7 +23,6 @@ authInternalUsers:
       - action: playback
       - action: api
       - action: metrics
-      - action: pprof
 
 # Control API (ingest service manages paths through this).
 api: yes

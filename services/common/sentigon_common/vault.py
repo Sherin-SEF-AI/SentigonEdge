@@ -12,7 +12,7 @@ from __future__ import annotations
 import hashlib
 import uuid
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .db.models import EvidenceRecord
@@ -21,6 +21,10 @@ from .logging import get_logger
 log = get_logger("vault")
 
 GENESIS_HASH = "0" * 64
+# Fixed key for a Postgres transaction-level advisory lock that serializes chain
+# appends so two concurrent writers cannot both chain off the same tail (which
+# would fork the "tamper-evident" chain or collide on the unique content_hash).
+_VAULT_ADVISORY_LOCK = 0x53544756  # "STGV"
 
 
 def sha256_hex(data: bytes) -> str:
@@ -48,6 +52,10 @@ async def append_evidence(
         if data is None:
             raise ValueError("append_evidence requires either data or content_digest")
         content_digest = sha256_hex(data)
+
+    # Serialize concurrent appends within this transaction so the tail read below
+    # and the insert are atomic w.r.t. other writers (auto-released on commit).
+    await session.execute(text("SELECT pg_advisory_xact_lock(:k)"), {"k": _VAULT_ADVISORY_LOCK})
 
     last = (
         await session.execute(select(EvidenceRecord).order_by(EvidenceRecord.seq.desc()).limit(1))

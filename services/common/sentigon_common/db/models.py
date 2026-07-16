@@ -279,6 +279,9 @@ class Incident(Base):
     __table_args__ = (
         Index("ix_incidents_status_severity", "status", "severity"),
         Index("ix_incidents_created", "created_at"),
+        # dedup/grouping hot path (created in migration e4b2dedup01). Declared here
+        # too so `alembic revision --autogenerate` does not try to drop it.
+        Index("ix_incidents_dedup", "signature_id", "camera_id", "zone_id", "status"),
     )
 
     id: Mapped[uuid.UUID] = _pk()

@@ -15,7 +15,7 @@ from datetime import UTC, datetime, timedelta
 from sentigon_common.db import async_session_factory
 from sentigon_common.db.models import AuditLogEntry, Incident, Signature
 from sentigon_common.logging import get_logger
-from sentigon_common.schemas.enums import IncidentStatus
+from sentigon_common.schemas.enums import IncidentStatus, Verdict
 from sqlalchemy import select
 
 from .config import settings
@@ -69,7 +69,9 @@ class Escalator:
                     .join(Signature, Incident.signature_id == Signature.id, isouter=True)
                     .where(
                         Incident.status == IncidentStatus.NEW,
-                        Incident.verdict.is_not(None),
+                        # only page on-call for VLM-CONFIRMED threats — `is_not(None)`
+                        # also matched UNVERIFIED/REJECTED, causing false pages.
+                        Incident.verdict == Verdict.CONFIRMED,
                         Incident.created_at >= floor,
                     )
                 )

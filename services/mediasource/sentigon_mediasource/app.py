@@ -91,3 +91,29 @@ async def usb_add(payload: UsbAddIn, request: Request) -> dict:
         )
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
+
+
+class StreamAddIn(BaseModel):
+    name: str
+    url: str  # rtsp:// | rtmp:// | srt:// | http(s):// (hls / mjpeg)
+    fps: int = 15
+    resolution: str = "1280x720"
+    zone_name: str = "Camera FOV"
+
+
+@app.post("/stream/add", status_code=201)
+async def stream_add(payload: StreamAddIn, request: Request) -> dict:
+    """Onboard ANY live network stream as a camera (the generic catch-all video
+    driver): relay to MediaMTX + register Camera/Zone. Writer role via middleware."""
+    if not payload.name.strip():
+        raise HTTPException(400, "name is required")
+    try:
+        return request.app.state.manager.add_stream_source(
+            payload.name.strip(),
+            payload.url.strip(),
+            fps=payload.fps,
+            resolution=payload.resolution,
+            zone_name=payload.zone_name,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc

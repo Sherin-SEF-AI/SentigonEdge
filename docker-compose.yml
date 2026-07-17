@@ -126,7 +126,9 @@ services:
     volumes:
       - ./infra/mediamtx.yml:/mediamtx.yml:ro
     ports:
-      - "8554:8554"     # RTSP
+      - "8554:8554"     # RTSP (relay out + device push in)
+      - "1935:1935"     # RTMP device push (body cams / phone apps)
+      - "8890:8890/udp" # SRT device push
       - "8888:8888"     # HLS
       - "8889:8889"     # WebRTC (WHEP/WHIP over HTTP)
       - "8189:8189/udp" # WebRTC ICE UDP

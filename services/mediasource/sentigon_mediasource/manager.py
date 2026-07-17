@@ -22,6 +22,17 @@ from .config import settings
 
 log = get_logger("mediasource")
 
+# MediaMTX source types that mean "a device is pushing a stream INTO us" (as opposed
+# to us pulling/relaying out). These are the inbound publishers we auto-onboard.
+_PUSH_SOURCE_TYPES = {
+    "rtmpConn",
+    "rtmpsConn",
+    "srtConn",
+    "webRTCSession",
+    "rtspSession",
+    "rtspsSession",
+}
+
 
 @dataclass
 class Source:
@@ -47,6 +58,9 @@ class MediaSourceManager:
         self.procs: dict[str, subprocess.Popen] = {}
         self.threads: dict[str, threading.Thread] = {}
         self._stop = threading.Event()
+        # push paths the user has explicitly deleted: keep ignoring them while they
+        # are still being pushed, but re-onboard on a fresh (re)connect (see watcher).
+        self._suppressed: set[str] = set()
 
     def load(self) -> None:
         data = yaml.safe_load(Path(settings.config_file).read_text())
@@ -110,8 +124,9 @@ class MediaSourceManager:
         ]
         # HTTP reconnect options apply only to network inputs; ffmpeg rejects them
         # (immediate exit) for a local file path.
-        is_network = s.url.startswith(("http://", "https://", "rtsp://", "rtmp://"))
-        if is_network:
+        # http(s) reconnect options apply only to those inputs; harmless elsewhere but
+        # ffmpeg rejects them for a local file path.
+        if s.url.startswith(("http://", "https://")):
             cmd += ["-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "5"]
         if s.type == "file":
             cmd += ["-stream_loop", "-1", "-re", "-i", s.url]
@@ -120,10 +135,11 @@ class MediaSourceManager:
             if s.input_format:
                 cmd += ["-input_format", s.input_format]
             cmd += ["-i", s.url]
-        else:  # hls / rtsp live relay
-            if s.type == "rtsp":
+        else:  # generic live network relay: rtsp / rtmp / srt / hls / http-mjpeg
+            if s.url.startswith("rtsp://"):
                 cmd += ["-rtsp_transport", "tcp"]
-            cmd += ["-re", "-i", s.url]
+            # live sources pace themselves; -re (file pacing) would only add latency
+            cmd += ["-i", s.url]
         cmd += ["-an", "-vf", f"scale={w}:{h},fps={s.fps}", "-c:v", settings.encoder]
         # preset/tune are libx264-only knobs; the hardware encoder rejects them.
         # ultrafast (not veryfast): on the Orin's CPU cores veryfast was pegging ~1.6
@@ -177,6 +193,8 @@ class MediaSourceManager:
             self.threads[s.path] = t
             t.start()
         threading.Thread(target=self._register_all, daemon=True).start()
+        if settings.push_watch:
+            threading.Thread(target=self._watch_pushes, name="media-pushwatch", daemon=True).start()
 
     # ── verify path is really live in MediaMTX, then onboard ──
     def _path_ready(self, path: str) -> bool:
@@ -204,6 +222,61 @@ class MediaSourceManager:
             self._register(s)
         else:
             log.warning("mediasource.not_ready", path=s.path)
+
+    # ── device-push auto-onboard (body cams / phones streaming IN) ──
+    def _watch_pushes(self) -> None:
+        """Poll MediaMTX for streams pushed IN by external devices (a body cam via
+        RTMP, a phone via SRT/WHIP/RTSP) and auto-onboard each as a camera. This is
+        the generic device-push catch-all: point any streaming device at the box and
+        it appears on the wall — no per-device config."""
+        while not self._stop.wait(settings.push_poll_interval):
+            try:
+                r = httpx.get(f"{settings.mediamtx_api}/v3/paths/list", timeout=5.0)
+                if r.status_code != 200:
+                    continue
+                items = r.json().get("items", [])
+            except Exception:  # noqa: BLE001
+                continue
+            ready_paths = {i.get("name") for i in items if i.get("ready")}
+            # a suppressed (user-deleted) path that stopped being pushed is forgotten,
+            # so a genuine reconnect later re-onboards it.
+            self._suppressed &= ready_paths
+            # reflect liveness of already-onboarded push cameras.
+            for s in self.sources:
+                if s.type == "push":
+                    s.status = "publishing" if s.path in ready_paths else "offline"
+            known = {s.path for s in self.sources}
+            for item in items:
+                path = item.get("name")
+                if not path or not item.get("ready"):
+                    continue
+                if path in known or path in self._suppressed:
+                    continue
+                src_type = (item.get("source") or {}).get("type", "")
+                if src_type not in _PUSH_SOURCE_TYPES:
+                    continue  # our own relays / pull sources, not an inbound device
+                self._onboard_push(path, src_type)
+
+    def _onboard_push(self, path: str, src_type: str) -> None:
+        """Register an externally-pushed MediaMTX path as a camera. The device already
+        publishes to MediaMTX, so there is no ffmpeg relay to run — perception pulls
+        the path directly. Not persisted: MediaMTX + the API camera row are the source
+        of truth and _register dedups by rtsp_uri, so it self-heals across restarts."""
+        name = path.replace("_", " ").strip() or path
+        s = Source(
+            name=name,
+            type="push",
+            url=f"{settings.mediamtx_rtsp}/{path}",
+            path=path,
+            fps=settings.push_default_fps,
+            resolution="1280x720",
+            zone={"name": "Camera FOV", "type": "general"},
+        )
+        s.status = "publishing"
+        s.codec = src_type
+        self.sources.append(s)
+        log.info("mediasource.push_discovered", path=path, source=src_type)
+        threading.Thread(target=self._register_one, args=(s,), daemon=True).start()
 
     def _register(self, s: Source) -> None:
         rtsp = f"{settings.mediamtx_rtsp}/{s.path}"
@@ -282,7 +355,12 @@ class MediaSourceManager:
         if t is not None:
             t.join(timeout=5.0)
         self.sources = [x for x in self.sources if x.path != s.path]
-        self._remove_source_from_config(s.path)
+        if s.type == "push":
+            # keep ignoring it while the device is still pushing; it re-onboards only
+            # on a fresh reconnect (the watcher clears suppression when it goes idle).
+            self._suppressed.add(s.path)
+        else:
+            self._remove_source_from_config(s.path)
         log.info("mediasource.source_removed", name=s.name, path=s.path, camera_id=camera_id)
         return True
 
@@ -389,4 +467,54 @@ class MediaSourceManager:
         t.start()
         threading.Thread(target=self._register_one, args=(s,), daemon=True).start()
         log.info("mediasource.usb_added", name=name, device=device, path=path)
+        return self._status_of(s)
+
+    def add_stream_source(
+        self,
+        name: str,
+        url: str,
+        *,
+        fps: int = 15,
+        resolution: str = "1280x720",
+        zone_name: str = "Camera FOV",
+    ) -> dict:
+        """Onboard ANY live network stream (rtsp/rtmp/srt/hls/http-mjpeg) as a camera:
+        relay it to MediaMTX and register the Camera + Zone — the generic catch-all
+        video driver, so a user can add any stream by URL with no device-specific code."""
+        if not url.startswith(("rtsp://", "rtmp://", "rtmps://", "srt://", "http://", "https://")):
+            raise ValueError("url must start with rtsp/rtmp/srt/http(s)")
+        if any(s.url == url for s in self.sources):
+            raise ValueError("that stream is already added")
+        slug = re.sub(r"[^a-z0-9]+", "_", name.lower()).strip("_") or "stream"
+        path, base, i = f"cam_{slug}", f"cam_{slug}", 2
+        while any(s.path == path for s in self.sources):
+            path, i = f"{base}_{i}", i + 1
+        entry = {
+            "name": name,
+            "type": "stream",
+            "url": url,
+            "path": path,
+            "fps": int(fps),
+            "resolution": resolution,
+            "zone": {"name": zone_name, "type": "general"},
+        }
+        self._persist_source(entry)
+        s = Source(
+            name=name,
+            type="stream",
+            url=url,
+            path=path,
+            fps=int(fps),
+            resolution=resolution,
+            zone=entry["zone"],
+        )
+        self.sources.append(s)
+        if not self.probe(s):
+            s.status = "unreachable"
+            raise ValueError(f"stream not reachable or has no video: {url}")
+        t = threading.Thread(target=self._run_source, args=(s,), name=f"media-{s.path}", daemon=True)
+        self.threads[s.path] = t
+        t.start()
+        threading.Thread(target=self._register_one, args=(s,), daemon=True).start()
+        log.info("mediasource.stream_added", name=name, url=url, path=path)
         return self._status_of(s)

@@ -39,6 +39,13 @@ class MediaSourceSettings(BaseSettings):
     reconnect_base: float = 2.0
     reconnect_max: float = 30.0
 
+    # Device-push auto-onboard: poll MediaMTX for streams pushed IN by external
+    # devices (body cams, phones via RTMP/SRT/WHIP/RTSP) and register each as a
+    # camera automatically — point any streaming device at the box and it appears.
+    push_watch: bool = True
+    push_poll_interval: float = 5.0
+    push_default_fps: int = 15
+
 
 @lru_cache
 def get_media_settings() -> MediaSourceSettings:

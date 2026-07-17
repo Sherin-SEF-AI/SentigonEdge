@@ -53,6 +53,23 @@ export function ZoneEditor() {
     },
   });
 
+  // host the browser reached the console on — the address a field device should push to.
+  const [pushHost, setPushHost] = useState("<box-ip>");
+  useEffect(() => {
+    if (typeof window !== "undefined" && window.location.hostname) setPushHost(window.location.hostname);
+  }, []);
+
+  const [streamName, setStreamName] = useState("");
+  const [streamUrl, setStreamUrl] = useState("");
+  const addStream = useMutation({
+    mutationFn: () => mediasource.addStream({ name: streamName.trim(), url: streamUrl.trim() }),
+    onSuccess: () => {
+      setStreamName("");
+      setStreamUrl("");
+      qc.invalidateQueries({ queryKey: ["api-cameras"] });
+    },
+  });
+
   const active = cameraId ?? cameras?.[0]?.id ?? null;
   const { data: zones } = useQuery({
     queryKey: ["zones", active],
@@ -230,6 +247,36 @@ export function ZoneEditor() {
             context engine picks it up and trips signatures on objects entering it.
           </div>
 
+          {/* Generic network stream: any rtsp/rtmp/srt/hls/mjpeg URL → onboarded camera */}
+          <div className="border-y border-line px-3 py-1.5 text-[10px] uppercase tracking-wide text-fg-muted">
+            Add Stream / Network Camera
+          </div>
+          <div className="space-y-1 px-3 py-2">
+            <input
+              value={streamName}
+              onChange={(e) => setStreamName(e.target.value)}
+              placeholder="name (e.g. Loading Dock RTSP)"
+              className="w-full rounded-[3px] border border-line bg-base px-1.5 py-0.5 text-[11px] text-fg outline-none placeholder:text-fg-muted"
+            />
+            <input
+              value={streamUrl}
+              onChange={(e) => setStreamUrl(e.target.value)}
+              placeholder="rtsp:// | rtmp:// | srt:// | http(s)://"
+              className="mono w-full rounded-[3px] border border-line bg-base px-1.5 py-0.5 text-[11px] text-fg outline-none placeholder:text-fg-muted"
+            />
+            <button
+              onClick={() => addStream.mutate()}
+              disabled={!streamName.trim() || !streamUrl.trim() || addStream.isPending}
+              className="mono w-full rounded-[2px] bg-raised px-2 py-0.5 text-[11px] text-cyan hover:text-fg disabled:opacity-40"
+            >
+              {addStream.isPending ? "adding…" : "add stream"}
+            </button>
+            {addStream.isError && <div className="mono text-[10px] text-red">{String(addStream.error)}</div>}
+            {addStream.isSuccess && (
+              <div className="mono text-[10px] text-green">stream added — appears on the wall once frames flow.</div>
+            )}
+          </div>
+
           {/* USB / v4l2 device cameras: scan + one-click onboard */}
           <div className="flex items-center justify-between border-y border-line px-3 py-1.5">
             <span className="text-[10px] uppercase tracking-wide text-fg-muted">USB / Device Cameras</span>
@@ -284,6 +331,31 @@ export function ZoneEditor() {
           {addUsb.isSuccess && (
             <div className="mono px-3 py-1 text-[10px] text-green">camera added — appears on the wall once frames flow.</div>
           )}
+
+          {/* Device push: point a body cam / phone streamer at the box; it auto-onboards */}
+          <div className="border-y border-line px-3 py-1.5 text-[10px] uppercase tracking-wide text-fg-muted">
+            Device Push (Body Cams / Phones)
+          </div>
+          <div className="space-y-1.5 px-3 py-2 text-[11px] leading-snug text-fg-muted">
+            <div>
+              Point any streaming device at the box and it auto-onboards as a camera. Replace{" "}
+              <span className="mono text-fg-secondary">NAME</span> with a label.
+            </div>
+            <div>
+              <span className="text-fg-secondary">RTMP</span>
+              <div className="mono break-all text-[10px] text-cyan">rtmp://{pushHost}:1935/NAME</div>
+            </div>
+            <div>
+              <span className="text-fg-secondary">SRT</span>
+              <div className="mono break-all text-[10px] text-cyan">
+                srt://{pushHost}:8890?streamid=publish:NAME
+              </div>
+            </div>
+            <div>
+              <span className="text-fg-secondary">WHIP</span>
+              <div className="mono break-all text-[10px] text-cyan">http://{pushHost}:8889/NAME/whip</div>
+            </div>
+          </div>
         </div>
       </div>
     </div>

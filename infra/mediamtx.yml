@@ -32,10 +32,22 @@ apiAddress: :9997
 metrics: yes
 metricsAddress: :9998
 
-# RTSP server: internal restream target and pull source for perception.
+# RTSP server: internal restream target and pull source for perception. Also
+# accepts inbound RTSP publishes (a device pushing a stream in).
 rtsp: yes
 rtspAddress: :8554
 rtspTransports: [tcp]
+
+# RTMP server: device-push slot. Body cams / phone apps (Larix, OBS, RTMP camera
+# apps) publish to rtmp://<box>:1935/<name>; the mediasource watcher auto-onboards
+# the new path as a camera.
+rtmp: yes
+rtmpAddress: :1935
+
+# SRT server: device-push slot for low-latency / lossy-network field devices
+# (srt://<box>:8890?streamid=publish:<name>). Also auto-onboarded.
+srt: yes
+srtAddress: :8890
 
 # HLS: fallback browser playback.
 hls: yes

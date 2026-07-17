@@ -604,6 +604,9 @@ export const mediasource = {
     input_format?: string;
     zone_name?: string;
   }) => postJSON<UsbAddResult>(`${MEDIASOURCE_URL}/usb/add`, body),
+  // generic catch-all: onboard any live network stream (rtsp/rtmp/srt/hls/mjpeg)
+  addStream: (body: { name: string; url: string; fps?: number; resolution?: string; zone_name?: string }) =>
+    postJSON<UsbAddResult>(`${MEDIASOURCE_URL}/stream/add`, body),
 };
 
 // ── SOC Dispatch (8081), Fleet Health (8082), Cross-Site (8086) ──────────────

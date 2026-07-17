@@ -95,7 +95,11 @@ async def fresh_frame(camera_id: str) -> tuple[str | None, bytes | None]:
     ground the frame and pin that exact image on the incident for the overlay."""
     try:
         async with httpx.AsyncClient(timeout=6.0) as c:
-            r = await c.post(f"{settings.ingest_url}/cameras/{camera_id}/snapshot")
+            # ingest snapshot is a protected write — authenticate as an internal caller
+            r = await c.post(
+                f"{settings.ingest_url}/cameras/{camera_id}/snapshot",
+                headers={"X-Service-Token": common.service_token},
+            )
             if r.status_code == 200:
                 ref = r.json().get("ref")
                 return ref, fetch_bytes(ref)

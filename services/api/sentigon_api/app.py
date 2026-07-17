@@ -598,7 +598,9 @@ async def _reconstruct(incident_id: uuid.UUID, window_s: int = 120) -> dict:
     trajectory = None
     if subject_track is not None and inc.camera_id:
         try:
-            async with httpx.AsyncClient(timeout=8.0) as c:
+            async with httpx.AsyncClient(
+                timeout=8.0, headers={"X-Service-Token": common_settings.service_token}
+            ) as c:
                 r = await c.get(
                     "http://localhost:8060/reid/trajectory",
                     params={
@@ -2667,7 +2669,9 @@ async def health_services() -> dict:
     import httpx
 
     out = []
-    async with httpx.AsyncClient(timeout=2.5) as client:
+    async with httpx.AsyncClient(
+        timeout=2.5, headers={"X-Service-Token": common_settings.service_token}
+    ) as client:
         for name, health_url, stats_url in _SERVICE_PROBES:
             entry: dict = {"name": name, "up": False, "stats": None}
             try:
@@ -2886,7 +2890,9 @@ async def ingest_access_event(payload: AccessEventIn) -> dict:
         with contextlib.suppress(Exception):
             import httpx
 
-            async with httpx.AsyncClient(timeout=4.0) as c:
+            async with httpx.AsyncClient(
+                timeout=4.0, headers={"X-Service-Token": common_settings.service_token}
+            ) as c:
                 r = await c.post(
                     "http://localhost:8040/access-event",
                     json={

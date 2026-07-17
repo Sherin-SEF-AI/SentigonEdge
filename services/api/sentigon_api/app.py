@@ -8,6 +8,7 @@ import time
 import uuid
 from datetime import UTC, datetime, timedelta
 
+import orjson
 from fastapi import Body, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -91,16 +92,91 @@ if not common_settings.jwt_secret_key or len(common_settings.jwt_secret_key) < 1
 # not fail the webhook (the SensorEvent is still persisted).
 _bus = BusProducer(client_id="api")
 
+# MQTT sensor bridge (optional). Recognized top-level keys map to SensorEventIn
+# fields; everything else is preserved under raw.
+_SENSOR_FIELDS = {
+    "device_id", "external_id", "event_type", "ts", "value", "unit", "state", "severity",
+}
+_mqtt_stop = asyncio.Event()
+_mqtt_task: asyncio.Task | None = None
+
+
+async def _handle_mqtt_message(topic: str, raw_payload: bytes) -> None:
+    """Turn one MQTT message into a sensor event. The device is routed by the last
+    topic segment (`<prefix>/<external_id>`); the body may be JSON or a bare
+    numeric/string value."""
+    external_id = topic.rsplit("/", 1)[-1]
+    try:
+        parsed = orjson.loads(raw_payload)
+        body = parsed if isinstance(parsed, dict) else {"value": parsed}
+    except Exception:  # noqa: BLE001
+        text = raw_payload.decode("utf-8", "replace").strip()
+        try:
+            body = {"value": float(text)}
+        except ValueError:
+            body = {"state": text}
+    sensor_in = SensorEventIn(
+        device_id=body.get("device_id"),
+        external_id=body.get("external_id", external_id),
+        event_type=body.get("event_type", "reading"),
+        ts=body.get("ts"),
+        value=body.get("value"),
+        unit=body.get("unit"),
+        state=body.get("state"),
+        severity=body.get("severity"),
+        raw={"mqtt_topic": topic, **{k: v for k, v in body.items() if k not in _SENSOR_FIELDS}},
+    )
+    try:
+        await ingest_sensor_event(sensor_in)
+    except HTTPException as exc:
+        log.warning("mqtt.ingest_skipped", topic=topic, detail=str(exc.detail))
+
+
+async def _mqtt_bridge() -> None:
+    """Subscribe to the configured MQTT broker and ingest each message as a sensor
+    event. Reconnects with backoff; only runs when MQTT_ENABLED."""
+    import aiomqtt
+
+    topic = f"{common_settings.mqtt_topic_prefix}/#"
+    while not _mqtt_stop.is_set():
+        try:
+            async with aiomqtt.Client(
+                hostname=common_settings.mqtt_broker,
+                port=common_settings.mqtt_port,
+                username=common_settings.mqtt_username or None,
+                password=common_settings.mqtt_password or None,
+            ) as client:
+                await client.subscribe(topic)
+                log.info("mqtt.connected", broker=common_settings.mqtt_broker, topic=topic)
+                async for message in client.messages:
+                    with contextlib.suppress(Exception):
+                        await _handle_mqtt_message(str(message.topic), bytes(message.payload))
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001
+            log.warning("mqtt.reconnect", broker=common_settings.mqtt_broker)
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(_mqtt_stop.wait(), timeout=5.0)
+
 
 @contextlib.asynccontextmanager
 async def _lifespan(_app: FastAPI):  # noqa: ANN202
+    global _mqtt_task
     with contextlib.suppress(Exception):
         await ensure_topics([Topics.SENSOR_EVENTS])
     with contextlib.suppress(Exception):
         await _bus.start()
+    if common_settings.mqtt_enabled:
+        _mqtt_stop.clear()
+        _mqtt_task = asyncio.create_task(_mqtt_bridge())
     try:
         yield
     finally:
+        _mqtt_stop.set()
+        if _mqtt_task is not None:
+            _mqtt_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await _mqtt_task
         with contextlib.suppress(Exception):
             await _bus.stop()
 

@@ -61,6 +61,16 @@ class Settings(BaseSettings):
     kafka_bootstrap: str = "localhost:19093"
     kafka_client_id: str = "sentigon"
 
+    # MQTT sensor bridge (optional): when enabled, the API subscribes to an MQTT
+    # broker and ingests messages as sensor events. Topic convention:
+    # "<mqtt_topic_prefix>/<external_id>" with a JSON body ({event_type,state,...}).
+    mqtt_enabled: bool = False
+    mqtt_broker: str = "localhost"
+    mqtt_port: int = 1883
+    mqtt_topic_prefix: str = "sentigon/sensors"
+    mqtt_username: str = ""
+    mqtt_password: str = ""
+
     # Qdrant
     qdrant_url: str = "http://localhost:6335"
     qdrant_grpc_port: int = 6336

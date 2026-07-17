@@ -134,6 +134,17 @@ services:
       - "8189:8189/udp" # WebRTC ICE UDP
       - "9997:9997"     # control API
 
+  # MQTT broker for the sensor plane: MQTT-native sensors publish to
+  # sentigon/sensors/<external_id>; the API's MQTT bridge ingests them.
+  mosquitto:
+    image: eclipse-mosquitto:2
+    restart: unless-stopped
+    volumes:
+      - ./infra/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - mqttdata:/mosquitto/data
+    ports:
+      - "1883:1883"
+
   # Observability: Prometheus scrapes service /metrics, Grafana visualizes.
   prometheus:
     image: prom/prometheus:latest
@@ -204,3 +215,4 @@ volumes:
   promdata:
   grafanadata:
   lokidata:
+  mqttdata:

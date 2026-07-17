@@ -602,4 +602,13 @@ THREAT_SIGNATURES: List[ThreatSignatureDef] = [
         "Denied badge read with a person loitering at the access point"),
     ThreatSignatureDef("Custom Activity Alert", "suspicious", "medium", "hybrid",
         "Operator-defined natural-language alert evaluated by the VLM"),
+    # ── sensor plane (generic non-camera devices → fused on a bound camera) ──
+    ThreatSignatureDef("Sensor Alarm", "sensor", "high", "hybrid",
+        "A non-camera sensor device reported an alarm condition"),
+    ThreatSignatureDef("Verified Sensor Alarm", "sensor", "critical", "hybrid",
+        "A sensor alarm corroborated by a person present on the co-located camera"),
+    ThreatSignatureDef("Environmental Alarm", "safety", "high", "hybrid",
+        "An environmental sensor crossed its alarm threshold (smoke, gas, temperature, flood)"),
+    ThreatSignatureDef("Panic Alarm", "safety", "critical", "hybrid",
+        "A panic / duress button was activated"),
 ]

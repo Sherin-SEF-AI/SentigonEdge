@@ -45,6 +45,17 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             auto_offset_reset="latest",
         )
     )
+    # sensor plane: generic non-camera devices (door/PIR/environmental/panic/...)
+    # fused with live video into incidents.
+    sensor_task = asyncio.create_task(
+        run_consumer(
+            [Topics.SENSOR_EVENTS],
+            "context-sensor",
+            engine.handle_sensor,
+            stop_event=stop,
+            auto_offset_reset="latest",
+        )
+    )
     app.state.engine = engine
     app.state.matcher = matcher
     app.state.stop = stop
@@ -53,7 +64,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         yield
     finally:
         stop.set()
-        for t in (task, wl_task):
+        for t in (task, wl_task, sensor_task):
             t.cancel()
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await t

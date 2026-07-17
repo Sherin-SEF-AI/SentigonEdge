@@ -946,6 +946,91 @@ class ContextEngine:
             await self._fire(camera_id, cand, now)
         return {"fired": fired, "people_present": len(present), "dwelling": len(dwelling)}
 
+    # ── generic sensor-plane fusion (door/PIR/environmental/panic/...) ──
+    @staticmethod
+    def _sensor_is_alarm(
+        event_type: str, state: str | None, severity: str, raw: dict
+    ) -> bool:
+        """Decide whether a sensor event is an alarm condition. Policy lives at the
+        edge (the sender marks severity / event_type / state / raw.alarm) so ANY
+        sensor type works without per-class code here."""
+        if severity in ("high", "critical"):
+            return True
+        if raw.get("alarm") is True:
+            return True
+        if event_type in ("alarm", "panic", "duress", "glassbreak", "tamper", "threshold", "fault"):
+            return True
+        return (state or "").lower() in ("forced", "held", "breach", "open_alarm")
+
+    @staticmethod
+    def _sensor_signature(device_class: str, has_video: bool) -> tuple[str, str]:
+        if device_class == "panic_button":
+            return "Panic Alarm", "Panic / duress button activated"
+        if device_class == "environmental":
+            return "Environmental Alarm", "Environmental sensor threshold breached"
+        if has_video:
+            return "Verified Sensor Alarm", f"{device_class} alarm corroborated by a person on video"
+        return "Sensor Alarm", f"{device_class} reported an alarm condition"
+
+    async def handle_sensor(self, payload: dict, correlation_id: str | None = None) -> dict:
+        """Consume a `sensor.events` message and, when it is an alarm condition, fuse
+        it with live video on its co-located camera to fire an incident — elevated to
+        'Verified' when a person is present. A sensor with no bound camera is persisted
+        (by the API) but creates no incident here (an Incident requires a camera)."""
+        await self.registry.refresh()
+        device_class = payload.get("device_class", "generic")
+        event_type = payload.get("event_type", "")
+        state = payload.get("state")
+        severity = (payload.get("severity") or "").lower()
+        raw = payload.get("raw") or {}
+        if not self._sensor_is_alarm(event_type, state, severity, raw):
+            return {"fired": None, "reason": "not an alarm condition"}
+        try:
+            camera_id = uuid.UUID(payload["camera_id"]) if payload.get("camera_id") else None
+        except (ValueError, TypeError):
+            camera_id = None
+        if camera_id is None:
+            return {"fired": None, "reason": "no camera bound (event persisted only)"}
+
+        now = time.time()
+        cam = self.store.get(camera_id)
+        present = (
+            [
+                t
+                for t in cam.tracks.values()
+                if t.object_class == "person" and now - t.last_seen < settings.track_stale_seconds
+            ]
+            if cam is not None
+            else []
+        )
+        sig_name, title = self._sensor_signature(device_class, bool(present))
+        zone_id = payload.get("zone_id") if isinstance(payload.get("zone_id"), str) else None
+        refs = {
+            "device_id": payload.get("device_id"),
+            "external_id": payload.get("external_id"),
+            "device_class": device_class,
+            "people_present": len(present),
+        }
+        cand = Candidate(
+            sig_name,
+            f"sensor.{device_class}",
+            title,
+            zone_id,
+            f"sensor:{payload.get('device_id')}",
+            0.9 if present else 0.75,
+            refs,
+            {
+                "event_type": event_type,
+                "state": state,
+                "value": payload.get("value"),
+                "unit": payload.get("unit"),
+                "people": len(present),
+                "method": "sensor+video" if present else "sensor",
+            },
+        )
+        await self._fire(camera_id, cand, now)
+        return {"fired": sig_name, "people_present": len(present)}
+
     def _suppressing_schedule(
         self, sig_name: str, camera_id: uuid.UUID, zone_id: str | None, now: float
     ) -> dict | None:

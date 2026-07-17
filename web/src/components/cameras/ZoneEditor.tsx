@@ -40,6 +40,9 @@ export function ZoneEditor() {
     },
   });
 
+  // `active` must be declared before `camName` reads it: .find() runs its closure
+  // synchronously, so referencing `active` from a later `const` throws a TDZ error.
+  const active = cameraId ?? cameras?.[0]?.id ?? null;
   const camName = cameras?.find((c) => c.id === active)?.name ?? "";
   const renameCam = useMutation({
     mutationFn: ({ id, name }: { id: string; name: string }) => core.renameCamera(id, name),
@@ -70,7 +73,6 @@ export function ZoneEditor() {
     },
   });
 
-  const active = cameraId ?? cameras?.[0]?.id ?? null;
   const { data: zones } = useQuery({
     queryKey: ["zones", active],
     queryFn: ({ signal }) => core.zones(active as string, signal),

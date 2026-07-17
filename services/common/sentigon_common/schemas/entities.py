@@ -82,6 +82,63 @@ class CameraOut(ORMModel):
         return redact_url_credentials(v)
 
 
+class DeviceCreate(BaseModel):
+    name: str
+    device_class: str = "generic"  # door_contact | motion_pir | environmental | ...
+    protocol: str = "webhook"  # webhook | mqtt | http
+    external_id: str | None = None
+    vendor: str | None = None
+    site_id: uuid.UUID | None = None
+    zone_id: uuid.UUID | None = None
+    camera_id: uuid.UUID | None = None
+    config: dict = Field(default_factory=dict)
+    meta: dict = Field(default_factory=dict)
+
+
+class DeviceUpdate(BaseModel):
+    name: str | None = None
+    device_class: str | None = None
+    protocol: str | None = None
+    external_id: str | None = None
+    vendor: str | None = None
+    site_id: uuid.UUID | None = None
+    zone_id: uuid.UUID | None = None
+    camera_id: uuid.UUID | None = None
+    config: dict | None = None
+    is_active: bool | None = None
+
+
+class DeviceOut(ORMModel):
+    id: uuid.UUID
+    site_id: uuid.UUID | None = None
+    zone_id: uuid.UUID | None = None
+    camera_id: uuid.UUID | None = None
+    name: str
+    device_class: str
+    protocol: str
+    external_id: str | None = None
+    vendor: str | None = None
+    config: dict | None = None
+    status: str
+    last_seen: datetime | None = None
+    is_active: bool
+    created_at: datetime
+
+
+class SensorEventOut(ORMModel):
+    id: uuid.UUID
+    seq: int
+    device_id: uuid.UUID
+    site_id: uuid.UUID | None = None
+    event_type: str
+    ts: datetime
+    value: float | None = None
+    unit: str | None = None
+    state: str | None = None
+    severity: str | None = None
+    incident_id: uuid.UUID | None = None
+
+
 class SignatureOut(ORMModel):
     id: uuid.UUID
     name: str

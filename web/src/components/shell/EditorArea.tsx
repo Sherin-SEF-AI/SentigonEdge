@@ -4,6 +4,7 @@ import { AdminScreen } from "@/components/admin/AdminScreen";
 import { AnalyticsScreen } from "@/components/analytics/AnalyticsScreen";
 import { ZoneEditor } from "@/components/cameras/ZoneEditor";
 import { CasesScreen } from "@/components/cases/CasesScreen";
+import { DevicesScreen } from "@/components/devices/DevicesScreen";
 import { CrossSiteScreen } from "@/components/crosssite/CrossSiteScreen";
 import { DispatchScreen } from "@/components/dispatch/DispatchScreen";
 import { FleetScreen } from "@/components/fleet/FleetScreen";
@@ -42,6 +43,7 @@ export function EditorArea() {
   if (tool === "search") return <SearchScreen />;
   if (tool === "signatures") return <SignaturesScreen />;
   if (tool === "cameras") return <ZoneEditor />;
+  if (tool === "devices") return <DevicesScreen />;
   if (tool === "cases") return <CasesScreen />;
   if (tool === "analytics") return <AnalyticsScreen />;
   if (tool === "models") return <ModelsScreen />;

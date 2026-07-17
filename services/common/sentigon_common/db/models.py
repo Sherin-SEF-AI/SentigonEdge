@@ -443,6 +443,84 @@ class AccessEvent(Base):
     created_at: Mapped[datetime] = _created()
 
 
+# ── Sensor plane (generic non-camera devices) ─────────────────
+# The signal-plane counterpart to Camera. A Device is any non-camera source —
+# door contacts, PIR motion, environmental, access controllers, or a generic
+# webhook/MQTT feed. device_class/protocol/status are free-form strings (not
+# enums) so a user can onboard *any* sensor without a schema migration; the
+# fusion layer treats unknown classes generically. AccessEvent is the original
+# hardwired case this generalizes.
+
+
+class Device(Base):
+    __tablename__ = "devices"
+    __table_args__ = (Index("ix_devices_external_id", "external_id"),)
+
+    id: Mapped[uuid.UUID] = _pk()
+    site_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("sites.id", ondelete="SET NULL"))
+    zone_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("zones.id", ondelete="SET NULL"))
+    # optional co-located camera: lets a sensor event correlate with live tracks.
+    camera_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("cameras.id", ondelete="SET NULL")
+    )
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    device_class: Mapped[str] = mapped_column(
+        String(64), default="generic", nullable=False
+    )  # door_contact | motion_pir | environmental | access_controller | generic | ...
+    protocol: Mapped[str] = mapped_column(
+        String(32), default="webhook", nullable=False
+    )  # webhook | mqtt | http
+    external_id: Mapped[str | None] = mapped_column(
+        String(255)
+    )  # id the device/gateway sends; the routing key for webhook/MQTT ingest
+    vendor: Mapped[str | None] = mapped_column(String(128))
+    config: Mapped[dict | None] = mapped_column(
+        JSONB, default=dict
+    )  # thresholds, mqtt topic, unit, value mapping, ...
+    status: Mapped[str] = mapped_column(
+        String(32), default="unknown", nullable=False
+    )  # online | offline | unknown
+    last_seen: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    meta: Mapped[dict | None] = mapped_column(JSONB, default=dict)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    created_at: Mapped[datetime] = _created()
+    updated_at: Mapped[datetime] = _updated()
+
+    events: Mapped[list[SensorEvent]] = relationship(
+        back_populates="device", cascade="all, delete-orphan"
+    )
+
+
+class SensorEvent(Base):
+    __tablename__ = "sensor_events"
+    __table_args__ = (
+        Index("ix_sensor_events_ts", "ts"),
+        Index("ix_sensor_events_device_ts", "device_id", "ts"),
+    )
+
+    id: Mapped[uuid.UUID] = _pk()
+    seq: Mapped[int] = _seq()
+    device_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("devices.id", ondelete="CASCADE"), nullable=False
+    )
+    site_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("sites.id", ondelete="SET NULL"))
+    event_type: Mapped[str] = mapped_column(
+        String(64), nullable=False
+    )  # state_change | motion | threshold | reading | heartbeat | alarm | ...
+    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    value: Mapped[float | None] = mapped_column(Float)  # numeric reading (temp, ppm, ...)
+    unit: Mapped[str | None] = mapped_column(String(32))
+    state: Mapped[str | None] = mapped_column(String(64))  # open | closed | on | off | ...
+    severity: Mapped[str | None] = mapped_column(String(16))  # optional pre-classified severity
+    incident_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("incidents.id", ondelete="SET NULL")
+    )
+    raw: Mapped[dict | None] = mapped_column(JSONB, default=dict)
+    created_at: Mapped[datetime] = _created()
+
+    device: Mapped[Device] = relationship(back_populates="events")
+
+
 # ── Recording / storage ───────────────────────────────────────
 
 

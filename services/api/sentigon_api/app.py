@@ -29,6 +29,7 @@ from sentigon_common.db.models import (
     AuditLogEntry,
     Camera,
     Case,
+    Device,
     EvalRun,
     Event,
     EvidenceRecord,
@@ -38,6 +39,7 @@ from sentigon_common.db.models import (
     NLAlert,
     Recording,
     ScheduleWindow,
+    SensorEvent,
     Signature,
     Site,
     User,
@@ -47,10 +49,18 @@ from sentigon_common.db.models import (
     case_incidents,
 )
 from sentigon_common.health import check_postgres, make_health_router
+from sentigon_common.kafka import BusProducer, ensure_topics
 from sentigon_common.logging import configure_logging, get_logger
 from sentigon_common.metrics import mount_metrics
 from sentigon_common.redact import redact_url_credentials
 from sentigon_common.risk import compute_risk_score, priority_band
+from sentigon_common.schemas.bus import SensorEventMsg, Topics
+from sentigon_common.schemas.entities import (
+    DeviceCreate,
+    DeviceOut,
+    DeviceUpdate,
+    SensorEventOut,
+)
 from sentigon_common.schemas.enums import (
     AccessEventType,
     IncidentStatus,
@@ -76,7 +86,26 @@ if not common_settings.jwt_secret_key or len(common_settings.jwt_secret_key) < 1
         "signing key. Set a strong secret (>=16 chars) in the environment."
     )
 
-app = FastAPI(title="Sentigon Core API", version="0.1.0")
+# Bus producer for the sensor plane: webhook/MQTT sensor readings are published to
+# `sensor.events` for the context engine to fuse. Best-effort — a Kafka outage must
+# not fail the webhook (the SensorEvent is still persisted).
+_bus = BusProducer(client_id="api")
+
+
+@contextlib.asynccontextmanager
+async def _lifespan(_app: FastAPI):  # noqa: ANN202
+    with contextlib.suppress(Exception):
+        await ensure_topics([Topics.SENSOR_EVENTS])
+    with contextlib.suppress(Exception):
+        await _bus.start()
+    try:
+        yield
+    finally:
+        with contextlib.suppress(Exception):
+            await _bus.stop()
+
+
+app = FastAPI(title="Sentigon Core API", version="0.1.0", lifespan=_lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=common_settings.cors_origin_list,
@@ -1029,6 +1058,219 @@ async def delete_camera(camera_id: uuid.UUID, request: Request) -> dict:
                 await coro
 
     return {"deleted": str(camera_id), "name": name, "objects_removed": removed}
+
+
+# ── devices (sensor plane: generic non-camera sources) ────────
+
+
+@app.get("/devices")
+async def list_devices(request: Request) -> list[dict]:
+    """List registered devices (door contacts, PIR, environmental, access
+    controllers, generic webhooks/MQTT). Site-scoped like cameras."""
+    allowed = await _allowed_sites(request)
+    async with async_session_factory() as session:
+        q = select(Device).order_by(Device.created_at.desc())
+        if allowed is not None:
+            # unassigned (site_id NULL) devices stay visible to any operator.
+            q = q.where((Device.site_id.in_(allowed)) | (Device.site_id.is_(None)))
+        devices = (await session.execute(q)).scalars().all()
+    return [DeviceOut.model_validate(d).model_dump(mode="json") for d in devices]
+
+
+@app.post("/devices", status_code=201)
+async def create_device(payload: DeviceCreate, request: Request) -> dict:
+    """Register a device (operator+). external_id is the routing key the webhook /
+    MQTT ingest uses to match incoming readings to this device."""
+    _require_role(request, UserRole.OPERATOR)
+    if not payload.name.strip():
+        raise HTTPException(400, "name is required")
+    async with async_session_factory() as session:
+        if payload.external_id:
+            dup = (
+                await session.execute(
+                    select(Device.id).where(Device.external_id == payload.external_id)
+                )
+            ).first()
+            if dup is not None:
+                raise HTTPException(409, f"external_id {payload.external_id} already registered")
+        dev = Device(
+            name=payload.name.strip(),
+            device_class=payload.device_class.strip() or "generic",
+            protocol=payload.protocol.strip() or "webhook",
+            external_id=payload.external_id,
+            vendor=payload.vendor,
+            site_id=payload.site_id,
+            zone_id=payload.zone_id,
+            camera_id=payload.camera_id,
+            config=payload.config,
+            meta=payload.meta,
+        )
+        session.add(dev)
+        session.add(
+            AuditLogEntry(
+                action="device.created",
+                resource_type="device",
+                resource_id=str(dev.id),
+                details={"name": dev.name, "class": dev.device_class, "protocol": dev.protocol},
+            )
+        )
+        await session.commit()
+        await session.refresh(dev)
+        return DeviceOut.model_validate(dev).model_dump(mode="json")
+
+
+@app.patch("/devices/{device_id}")
+async def patch_device(device_id: uuid.UUID, payload: DeviceUpdate, request: Request) -> dict:
+    """Update a device's metadata / bindings (operator+)."""
+    _require_role(request, UserRole.OPERATOR)
+    async with async_session_factory() as session:
+        dev = await session.get(Device, device_id)
+        if dev is None:
+            raise HTTPException(404, "device not found")
+        data = payload.model_dump(exclude_unset=True)
+        for field in (
+            "name",
+            "device_class",
+            "protocol",
+            "external_id",
+            "vendor",
+            "site_id",
+            "zone_id",
+            "camera_id",
+            "config",
+            "is_active",
+        ):
+            if field in data:
+                setattr(dev, field, data[field])
+        session.add(
+            AuditLogEntry(
+                action="device.updated",
+                resource_type="device",
+                resource_id=str(device_id),
+                details={"name": dev.name},
+            )
+        )
+        await session.commit()
+        await session.refresh(dev)
+        return DeviceOut.model_validate(dev).model_dump(mode="json")
+
+
+@app.delete("/devices/{device_id}")
+async def delete_device(device_id: uuid.UUID, request: Request) -> dict:
+    """Delete a device and its sensor events (admin only). The DB cascades
+    sensor_events on the device FK."""
+    _require_role(request, UserRole.ADMIN)
+    async with async_session_factory() as session:
+        dev = await session.get(Device, device_id)
+        if dev is None:
+            raise HTTPException(404, "device not found")
+        name = dev.name
+        await session.execute(delete(Device).where(Device.id == device_id))
+        session.add(
+            AuditLogEntry(
+                action="device.deleted",
+                resource_type="device",
+                resource_id=str(device_id),
+                details={"name": name},
+            )
+        )
+        await session.commit()
+    return {"deleted": str(device_id), "name": name}
+
+
+@app.get("/devices/{device_id}/events")
+async def device_events(
+    device_id: uuid.UUID, request: Request, limit: int = Query(50, ge=1, le=500)
+) -> list[dict]:
+    """Recent sensor events for a device, newest first."""
+    async with async_session_factory() as session:
+        if await session.get(Device, device_id) is None:
+            raise HTTPException(404, "device not found")
+        rows = (
+            await session.execute(
+                select(SensorEvent)
+                .where(SensorEvent.device_id == device_id)
+                .order_by(SensorEvent.seq.desc())
+                .limit(limit)
+            )
+        ).scalars().all()
+    return [SensorEventOut.model_validate(e).model_dump(mode="json") for e in rows]
+
+
+class SensorEventIn(BaseModel):
+    device_id: uuid.UUID | None = None
+    external_id: str | None = None  # alternative to device_id — the device's routing key
+    event_type: str = "reading"  # state_change | motion | threshold | reading | heartbeat | ...
+    ts: datetime | None = None
+    value: float | None = None
+    unit: str | None = None
+    state: str | None = None
+    severity: str | None = None
+    raw: dict = Field(default_factory=dict)
+
+
+@app.post("/sensor-events", status_code=201)
+async def ingest_sensor_event(payload: SensorEventIn) -> dict:
+    """Generic sensor webhook adapter: accept a reading/event from any registered
+    Device (matched by device_id or external_id), persist it, mark the device
+    online, and publish it to `sensor.events` for context fusion. A field gateway
+    posts here with the service token; the bus publish is best-effort so a Kafka
+    outage never fails the webhook (the event is still persisted)."""
+    if payload.device_id is None and not payload.external_id:
+        raise HTTPException(400, "device_id or external_id is required")
+    ts = payload.ts or datetime.now(UTC)
+    async with async_session_factory() as session:
+        if payload.device_id is not None:
+            dev = await session.get(Device, payload.device_id)
+        else:
+            dev = (
+                await session.execute(
+                    select(Device).where(Device.external_id == payload.external_id)
+                )
+            ).scalar_one_or_none()
+        if dev is None:
+            raise HTTPException(404, "device not found (register it first)")
+        ev = SensorEvent(
+            device_id=dev.id,
+            site_id=dev.site_id,
+            event_type=payload.event_type,
+            ts=ts,
+            value=payload.value,
+            unit=payload.unit,
+            state=payload.state,
+            severity=payload.severity,
+            raw=payload.raw,
+        )
+        session.add(ev)
+        dev.last_seen = datetime.now(UTC)
+        dev.status = "online"
+        await session.commit()
+        await session.refresh(ev)
+        ev_id = str(ev.id)
+        dev_id = str(dev.id)
+        msg = SensorEventMsg(
+            producer="api",
+            device_id=dev.id,
+            external_id=dev.external_id,
+            device_class=dev.device_class,
+            site_id=dev.site_id,
+            zone_id=dev.zone_id,
+            camera_id=dev.camera_id,
+            event_type=ev.event_type,
+            ts=ts,
+            value=ev.value,
+            unit=ev.unit,
+            state=ev.state,
+            severity=ev.severity,
+            raw=ev.raw or {},
+        )
+    published = False
+    try:
+        await _bus.publish(Topics.SENSOR_EVENTS, msg, key=dev_id)
+        published = True
+    except Exception:  # noqa: BLE001
+        log.warning("sensor_event.publish_failed", device_id=dev_id)
+    return {"id": ev_id, "device_id": dev_id, "published": published}
 
 
 # ── zones (ROI editor) ────────────────────────────────────────

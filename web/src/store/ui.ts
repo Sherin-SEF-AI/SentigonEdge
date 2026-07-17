@@ -9,6 +9,7 @@ export type ToolId =
   | "incidents"
   | "cases"
   | "cameras"
+  | "devices"
   | "signatures"
   | "analytics"
   | "health"

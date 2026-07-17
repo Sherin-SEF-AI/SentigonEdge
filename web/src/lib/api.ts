@@ -609,6 +609,67 @@ export const mediasource = {
     postJSON<UsbAddResult>(`${MEDIASOURCE_URL}/stream/add`, body),
 };
 
+// ── Sensor plane: generic non-camera devices (door contacts, PIR, env, ...) ──
+export interface Device {
+  id: string;
+  site_id: string | null;
+  zone_id: string | null;
+  camera_id: string | null;
+  name: string;
+  device_class: string;
+  protocol: string;
+  external_id: string | null;
+  vendor: string | null;
+  config: Record<string, unknown> | null;
+  status: string;
+  last_seen: string | null;
+  is_active: boolean;
+  created_at: string;
+}
+export interface SensorEvent {
+  id: string;
+  seq: number;
+  device_id: string;
+  site_id: string | null;
+  event_type: string;
+  ts: string;
+  value: number | null;
+  unit: string | null;
+  state: string | null;
+  severity: string | null;
+  incident_id: string | null;
+}
+
+export const devices = {
+  list: (signal?: AbortSignal) => getJSON<Device[]>(`${API_URL}/devices`, signal),
+  events: (id: string, signal?: AbortSignal) =>
+    getJSON<SensorEvent[]>(`${API_URL}/devices/${id}/events?limit=50`, signal),
+  create: (body: {
+    name: string;
+    device_class: string;
+    protocol: string;
+    external_id?: string | null;
+    vendor?: string | null;
+    site_id?: string | null;
+    camera_id?: string | null;
+    config?: Record<string, unknown>;
+  }) => postJSON<Device>(`${API_URL}/devices`, body),
+  update: (id: string, body: Record<string, unknown>) =>
+    fetch(`${API_URL}/devices/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", ...authHeaders() },
+      body: JSON.stringify(body),
+    }).then((r) => {
+      if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
+      return r.json() as Promise<Device>;
+    }),
+  remove: (id: string) =>
+    fetch(`${API_URL}/devices/${id}`, { method: "DELETE", headers: { ...authHeaders() } }).then((r) => {
+      if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
+      return r.json() as Promise<{ deleted: string; name: string }>;
+    }),
+};
+
 // ── SOC Dispatch (8081), Fleet Health (8082), Cross-Site (8086) ──────────────
 export const DISPATCH_URL = process.env.NEXT_PUBLIC_DISPATCH_URL ?? "http://localhost:8081";
 export const FLEET_URL = process.env.NEXT_PUBLIC_FLEET_URL ?? "http://localhost:8082";

@@ -26,6 +26,7 @@ class Topics:
     INCIDENTS_VERIFIED = "incidents.verified"
     INGEST_HEALTH = "ingest.health"
     ACCESS_EVENTS = "access.events"
+    SENSOR_EVENTS = "sensor.events"
 
     ALL = [
         PERCEPTION_OBJECTS,
@@ -34,6 +35,7 @@ class Topics:
         INCIDENTS_VERIFIED,
         INGEST_HEALTH,
         ACCESS_EVENTS,
+        SENSOR_EVENTS,
     ]
 
 
@@ -147,4 +149,27 @@ class AccessEventMsg(BusMessage):
     ts: datetime
     badge_id: str | None = None
     camera_id: uuid.UUID | None = None
+    raw: dict = Field(default_factory=dict)
+
+
+# ── sensor.events (generic non-camera signal plane) ───────────
+
+
+class SensorEventMsg(BusMessage):
+    """A normalized reading/event from any non-camera Device. Carries the device's
+    class + optional camera/zone bindings so the context engine can fuse it with
+    live detections and trip sensor signatures."""
+
+    device_id: uuid.UUID
+    external_id: str | None = None
+    device_class: str = "generic"
+    site_id: uuid.UUID | None = None
+    zone_id: uuid.UUID | None = None
+    camera_id: uuid.UUID | None = None
+    event_type: str
+    ts: datetime
+    value: float | None = None
+    unit: str | None = None
+    state: str | None = None
+    severity: str | None = None
     raw: dict = Field(default_factory=dict)

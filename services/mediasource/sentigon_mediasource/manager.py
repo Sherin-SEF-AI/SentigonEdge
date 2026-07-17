@@ -124,16 +124,14 @@ class MediaSourceManager:
             if s.type == "rtsp":
                 cmd += ["-rtsp_transport", "tcp"]
             cmd += ["-re", "-i", s.url]
+        cmd += ["-an", "-vf", f"scale={w}:{h},fps={s.fps}", "-c:v", settings.encoder]
+        # preset/tune are libx264-only knobs; the hardware encoder rejects them.
+        # ultrafast (not veryfast): on the Orin's CPU cores veryfast was pegging ~1.6
+        # cores at only ~5fps for one 720p relay; ultrafast roughly halves that so the
+        # relay keeps up at the target fps (local RTSP, so the higher bitrate is fine).
+        if settings.encoder == "libx264":
+            cmd += ["-preset", "ultrafast", "-tune", "zerolatency"]
         cmd += [
-            "-an",
-            "-vf",
-            f"scale={w}:{h},fps={s.fps}",
-            "-c:v",
-            "libx264",
-            "-preset",
-            "veryfast",
-            "-tune",
-            "zerolatency",
             "-g",
             str(s.fps * 2),
             "-pix_fmt",

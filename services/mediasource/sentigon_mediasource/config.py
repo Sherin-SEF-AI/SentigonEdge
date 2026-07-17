@@ -22,6 +22,11 @@ class MediaSourceSettings(BaseSettings):
     ffmpeg_path: str = str(_REPO_ROOT / "tools" / "ffmpeg")
     ffprobe_path: str = str(_REPO_ROOT / "tools" / "ffprobe")
     config_file: str = str(_REPO_ROOT / "configs" / "media_sources.yaml")
+    # Relay video encoder (configurable). "libx264" is the reliable CPU default.
+    # "h264_v4l2m2m" is the Jetson hardware encoder — much lower CPU, but on some
+    # JetPack/ffmpeg builds it needs extra params or conflicts with the v4l2 capture
+    # device, so it is opt-in (test with a single source before enabling fleet-wide).
+    encoder: str = "libx264"
 
     mediamtx_rtsp: str = "rtsp://localhost:8554"
     mediamtx_api: str = "http://localhost:9997"

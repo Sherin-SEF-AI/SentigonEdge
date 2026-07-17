@@ -6,6 +6,7 @@ track IDs) stays isolated per stream. NMS-free end-to-end model, FP16 on GPU.
 
 from __future__ import annotations
 
+import contextlib
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -45,6 +46,19 @@ class Detector:
         # per-call to track() regardless, so the engine still runs on the GPU.
         if str(chosen).endswith(".pt"):
             self.model.to("cuda" if device == "cuda" else "cpu")
+
+        # Warm up: the first inference allocates the TensorRT execution context + CUDA
+        # buffers (a one-off multi-hundred-ms spike). Do it at load so the first real
+        # frames — and every model swap / reconnect — run at full speed instead of
+        # stalling or tripping frame-timeout logic.
+        with contextlib.suppress(Exception):
+            self.model.predict(
+                np.zeros((settings.imgsz, settings.imgsz, 3), dtype=np.uint8),
+                device=self.device,
+                half=settings.half,
+                imgsz=settings.imgsz,
+                verbose=False,
+            )
 
     def track(self, frame: np.ndarray) -> list[Detection]:
         result = self.model.track(

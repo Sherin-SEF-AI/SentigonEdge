@@ -14,6 +14,7 @@ import time
 import uuid
 from collections import Counter
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 
 os.environ.setdefault("OPENCV_FFMPEG_CAPTURE_OPTIONS", "rtsp_transport;tcp|stimeout;5000000")
@@ -83,10 +84,38 @@ class PerceptionWorker(threading.Thread):
         self._tamper_last = 0.0
         self.model_name = settings.model
         self._last_embed: dict[int, int] = {}
+        self._veh_color: dict[int, tuple[str, int]] = {}  # track_id -> (colour, frame)
+        self._track_seen: dict[int, int] = {}  # track_id -> last frame seen (for eviction)
+        self._last_post_ms = 0.0
+        # small pool so incident reports (fall/tamper) never block the detect loop
+        self._io_pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix=f"perc-io-{name}")
         self.stats: dict = {"status": "loading", "fps": 0.0, "objects": 0, "inference_ms": 0.0}
 
     def stop(self) -> None:
         self._stop.set()
+        self._io_pool.shutdown(wait=False, cancel_futures=True)
+
+    def _vehicle_color(self, track_id: int, crop: np.ndarray) -> str:
+        """Dominant colour is stable per vehicle, so compute it once per track and
+        refresh only every embed_every_n frames — not on every frame."""
+        cached = self._veh_color.get(track_id)
+        if cached is not None and self._frames - cached[1] < settings.embed_every_n:
+            return cached[0]
+        color = dominant_color(crop)
+        self._veh_color[track_id] = (color, self._frames)
+        return color
+
+    def _prune_tracks(self) -> None:
+        """Evict per-track state for tracks not seen for ~60s so these dicts do not
+        grow unbounded over days (ByteTrack ids only ever increase)."""
+        horizon = max(1, int(settings.infer_fps * 60))
+        stale = [t for t, f in self._track_seen.items() if self._frames - f > horizon]
+        for t in stale:
+            self._track_seen.pop(t, None)
+            self._last_embed.pop(t, None)
+            self._plate_votes.pop(t, None)
+            self._plate_last.pop(t, None)
+            self._veh_color.pop(t, None)
 
     def swap_detector(self, model_path: str) -> str:
         """Hot-swap the detection model in place. The new model is loaded while the
@@ -173,6 +202,8 @@ class PerceptionWorker(threading.Thread):
             crop_classes: list[str] = []
             crop_colors: list[str] = []
             for d in dets:
+                if d.track_id >= 0:
+                    self._track_seen[d.track_id] = self._frames
                 cx, cy = d.centroid
                 # mask-precise intrusion when a segmentation mask is available,
                 # else fall back to the bbox-centroid test
@@ -190,7 +221,7 @@ class PerceptionWorker(threading.Thread):
                     x2, y2 = min(w, x2), min(h, y2)
                     if x2 > x1 and y2 > y1:
                         attrs["vehicle_type"] = d.object_class
-                        attrs["color"] = dominant_color(frame[y1:y2, x1:x2])
+                        attrs["color"] = self._vehicle_color(d.track_id, frame[y1:y2, x1:x2])
                         if self.plate_reader is not None and d.track_id >= 0:
                             self._read_plate(frame[y1:y2, x1:x2], d.track_id)
                             plate = self._best_plate(d.track_id)
@@ -246,6 +277,9 @@ class PerceptionWorker(threading.Thread):
             if self.fall_detector is not None and self._frames % settings.fall_every_n == 0:
                 self._check_fall(frame, now)
 
+            # post_ms = everything after detection (zones, colour, ANPR, ReID, publish);
+            # exposing it separately from inference_ms shows where the frame budget goes.
+            self._last_post_ms = (time.perf_counter() - t0) * 1000 - infer_ms
             fps_n += 1
             if now - fps_t >= 1.0:
                 self.stats.update(
@@ -253,8 +287,10 @@ class PerceptionWorker(threading.Thread):
                     fps=round(fps_n / (now - fps_t), 2),
                     objects=len(objs),
                     inference_ms=round(infer_ms, 1),
+                    post_ms=round(self._last_post_ms, 1),
                     frames_skipped=self._skipped,
                 )
+                self._prune_tracks()
                 self._check_tamper(frame, now)
                 fps_t = now
                 fps_n = 0
@@ -302,7 +338,7 @@ class PerceptionWorker(threading.Thread):
                 now - self._fall_since >= settings.fall_sustain_s
                 and now - self._fall_last_fired >= settings.fall_cooldown_s
             ):
-                self._report_fall(boxes[0])
+                self._io_pool.submit(self._report_fall, boxes[0])  # off the detect thread
                 self._fall_last_fired = now
         else:
             self._fall_since = None
@@ -342,7 +378,7 @@ class PerceptionWorker(threading.Thread):
             ):
                 kind = "blackout" if dark else "defocus"
                 metric = brightness if dark else blur_var
-                self._report_tamper(kind, metric)
+                self._io_pool.submit(self._report_tamper, kind, metric)  # off the detect thread
                 self._tamper_last = now
         else:
             self._tamper_since = None

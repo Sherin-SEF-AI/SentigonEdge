@@ -52,19 +52,28 @@ def _probe_modes(device: str) -> list[dict]:
     return modes
 
 
+def _area(m: dict) -> int:
+    w, h = m["resolution"].split("x")
+    return int(w) * int(h)
+
+
 def _best_mode(modes: list[dict]) -> dict:
-    """Prefer mjpeg 1280x720 (compressed, low-bandwidth), else the largest area."""
+    """Pick a mode that actually runs at full fps over USB. MJPEG is compressed and
+    fits the bus at 30fps; RAW formats (yuyv/uyvy422) are bandwidth-limited to a few
+    fps at high resolution — capturing raw 1920x1536 is why a 30fps camera crawled at
+    2fps. So: strongly prefer MJPEG (favouring 720p, capped at 1080p), and only fall
+    back to a *modest* raw resolution if the device offers no MJPEG."""
     if not modes:
         return {"format": "", "resolution": "1280x720"}
-    for m in modes:
-        if m["format"].lower() in ("mjpeg", "mjpg") and m["resolution"] == "1280x720":
-            return m
-
-    def area(m: dict) -> int:
-        w, h = m["resolution"].split("x")
-        return int(w) * int(h)
-
-    return max(modes, key=area)
+    mjpeg = [m for m in modes if m["format"].lower() in ("mjpeg", "mjpg")]
+    if mjpeg:
+        for m in mjpeg:
+            if m["resolution"] == "1280x720":
+                return m
+        capped = [m for m in mjpeg if _area(m) <= 1920 * 1080] or mjpeg
+        return max(capped, key=_area)
+    raw_capped = [m for m in modes if _area(m) <= 1280 * 720] or modes
+    return max(raw_capped, key=_area)
 
 
 def scan_devices() -> list[dict]:

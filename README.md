@@ -1,5 +1,7 @@
 # SentigonEdge
 For Edge Devices 
+
+
 SentigonEdge is a computer-vision security system that runs on a single **NVIDIA Jetson
 AGX Orin**. It takes ordinary IP-camera (RTSP) video, detects objects and behaviours,
 groups them into scored incidents, asks a local vision-language model to confirm or

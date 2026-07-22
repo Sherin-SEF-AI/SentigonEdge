@@ -42,6 +42,20 @@ class PerceptionSettings(BaseSettings):
     tracker: str = "bytetrack.yaml"
     half: bool = True  # FP16 on GPU
 
+    # Hardware (NVDEC) RTSP decode via a GStreamer subprocess (nvv4l2decoder), off the
+    # CPU. Falls back to CPU cv2/ffmpeg decode automatically if the pipeline fails to
+    # start. width/height force the decoded output size (nvvidconv scales on the HW
+    # engine); 0 keeps the negotiated source size unusable for a fixed-size pipe, so a
+    # concrete default is required.
+    hw_decode: bool = False
+    hw_decode_width: int = 1280
+    hw_decode_height: int = 720
+    hw_decode_latency_ms: int = 100
+    # Emit only every Nth decoded frame (in hardware) so we convert+pipe roughly the
+    # infer_fps we actually use, not the full source rate. 0/1 = every frame. For a
+    # ~15fps source and infer_fps~8, 2 halves the raw-frame transfer cost.
+    hw_decode_drop_interval: int = 2
+
     # security-relevant COCO classes (person, vehicles, bags, knife)
     classes: list[int] = [0, 1, 2, 3, 5, 7, 24, 26, 28, 43]
     weapon_classes: list[str] = ["knife", "gun", "rifle", "pistol", "weapon"]

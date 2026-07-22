@@ -29,6 +29,7 @@ from sentigon_common.schemas.bus import (  # noqa: E402
     Topics,
 )
 
+from . import hwdecode  # noqa: E402
 from .attributes import VEHICLE_CLASSES, dominant_color  # noqa: E402
 from .config import settings  # noqa: E402
 from .detector import Detector  # noqa: E402
@@ -80,6 +81,7 @@ class PerceptionWorker(threading.Thread):
         self._seq = 0
         self._frames = 0
         self._skipped = 0
+        self._frames_seen = False
         self._tamper_since: float | None = None
         self._tamper_last = 0.0
         self.model_name = settings.model
@@ -138,17 +140,26 @@ class PerceptionWorker(threading.Thread):
             return
         log.info("perception.worker_ready", camera=self.name_, model=settings.model)
         backoff = 1.0
+        hw_want = settings.hw_decode and hwdecode.available()
+        hw_fail = 0
         while not self._stop.is_set():
-            cap = cv2.VideoCapture(self.rtsp_uri, cv2.CAP_FFMPEG)
-            cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+            # NVDEC hardware decode when enabled+healthy; auto-fall back to CPU decode
+            # after repeated hardware failures (e.g. an odd codec/source) so a bad
+            # pipeline can never wedge a camera offline.
+            use_hw = hw_want and hw_fail < 2
+            cap, mode = self._open_capture(use_hw)
             if not cap.isOpened():
                 self.stats["status"] = "offline"
                 cap.release()
+                if mode == "nvdec":
+                    hw_fail += 1
                 if self._stop.wait(backoff):
                     break
                 backoff = min(backoff * 2, 15.0)
                 continue
             self.stats["status"] = "online"
+            self.stats["decode"] = mode
+            self._frames_seen = False
             connected_at = time.monotonic()
             try:
                 self._loop(cap)
@@ -156,6 +167,12 @@ class PerceptionWorker(threading.Thread):
                 log.exception("perception.loop_error", camera=self.name_)
             finally:
                 cap.release()
+            # a hardware capture that connected but produced no frames is treated as a
+            # failure so we fall back to CPU rather than silently starving the detector.
+            if mode == "nvdec" and not self._frames_seen:
+                hw_fail += 1
+                if hw_fail >= 2:
+                    log.warning("perception.hwdecode_fallback_cpu", camera=self.name_)
             # Reset backoff only if the stream stayed up a while; a source that connects
             # then immediately drops now backs off exponentially instead of hot-looping
             # a reconnect + model re-init every second.
@@ -165,7 +182,30 @@ class PerceptionWorker(threading.Thread):
         self.stats["status"] = "offline"
         log.info("perception.worker_stopped", camera=self.name_)
 
-    def _loop(self, cap: cv2.VideoCapture) -> None:
+    def _open_capture(self, use_hw: bool):
+        """Return (capture, mode). Tries NVDEC when requested; if the subprocess dies
+        on start, falls back to CPU decode in the same call."""
+        if use_hw:
+            try:
+                cap = hwdecode.GstNvDecCapture(
+                    self.rtsp_uri,
+                    settings.hw_decode_width,
+                    settings.hw_decode_height,
+                    settings.hw_decode_latency_ms,
+                    settings.hw_decode_drop_interval,
+                )
+                # give gst a moment to spawn; if it died immediately, fall back
+                time.sleep(0.4)
+                if cap.isOpened():
+                    return cap, "nvdec"
+                cap.release()
+            except Exception:
+                log.exception("perception.hwdecode_start_failed", camera=self.name_)
+        cap = cv2.VideoCapture(self.rtsp_uri, cv2.CAP_FFMPEG)
+        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        return cap, "cpu"
+
+    def _loop(self, cap) -> None:
         assert self.detector is not None
         min_interval = 1.0 / settings.infer_fps
         last = 0.0
@@ -182,6 +222,7 @@ class PerceptionWorker(threading.Thread):
                 time.sleep(0.02)
                 continue
             last_ok = now
+            self._frames_seen = True
             if now - last < min_interval:
                 # backpressure: source delivers faster than infer_fps; drop this
                 # frame (BUFFERSIZE=1 already keeps only the latest) and record it

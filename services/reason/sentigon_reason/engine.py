@@ -15,6 +15,7 @@ from sentigon_common.schemas.bus import Topics, VerifiedIncidentMsg
 from sentigon_common.schemas.enums import IncidentStatus, Severity, Verdict
 from sqlalchemy import select
 
+from . import escalate
 from .config import settings
 from .verifier import verify
 
@@ -125,6 +126,29 @@ class ReasonEngine:
                 return
 
         result = await verify(payload)
+        # High-stakes or inconclusive incidents get a second opinion from the strong
+        # text reasoner (Groq), which re-adjudicates over the VLM's scene description
+        # + full context. Best-effort: on any failure the VLM verdict stands.
+        if escalate.should_escalate(str(payload.get("severity", "medium")), result["verdict"]):
+            adj = await escalate.adjudicate(payload, result)
+            if adj is not None:
+                result["escalation"] = {
+                    "model": adj["model"],
+                    "vlm_verdict": result["verdict"],
+                    "recommended_action": adj["recommended_action"],
+                    "confidence": adj["confidence"],
+                    "latency_ms": adj["latency_ms"],
+                }
+                result["verdict"] = adj["verdict"]
+                result["sitrep"] = adj["sitrep"]
+                result["reasoning"] = adj["reasoning"]
+                log.info(
+                    "reason.escalated",
+                    corr=corr,
+                    vlm_verdict=result["escalation"]["vlm_verdict"],
+                    final_verdict=adj["verdict"],
+                    model=adj["model"],
+                )
         verdict = Verdict(result["verdict"])
 
         async with async_session_factory() as session:
@@ -167,6 +191,7 @@ class ReasonEngine:
                 "model": result["model"],
                 "latency_ms": result["latency_ms"],
                 "frames": result["frames"],
+                **({"escalation": result["escalation"]} if result.get("escalation") else {}),
             }
             if result.get("attributes"):
                 inc.attributes = {**(inc.attributes or {}), **result["attributes"]}

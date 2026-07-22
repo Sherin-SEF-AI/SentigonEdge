@@ -267,6 +267,9 @@ class ContextEngine:
                 "max_occupancy": z.max_occupancy,
                 # Tailgating only makes sense at an access-controlled door.
                 "access_controlled": bool((z.meta or {}).get("access_controlled", False)),
+                # per-zone temporal-confirmation override (seconds a track must remain
+                # continuously inside before intrusion fires); None -> global default.
+                "confirm_seconds": (z.meta or {}).get("confirm_seconds"),
                 "polygon": (z.polygon_image or {}).get("points"),
             }
             for z in zones
@@ -288,7 +291,6 @@ class ContextEngine:
         cam.fw, cam.fh = fw, fh
         self.stats["frames"] += 1
 
-        newly_entered: list[tuple[TrackState, str]] = []
         for o in payload.get("objects", []):
             tid = o.get("track_id", -1)
             if tid < 0:
@@ -309,7 +311,6 @@ class ContextEngine:
                 zs = cam.zones.setdefault(z, ZoneState(z))
                 zs.occupants.add(tid)
                 zs.entries.append((now, tid, cls))
-                newly_entered.append((st, z))
             for z in st.zones - new_zones:
                 if z in cam.zones:
                     zs = cam.zones[z]
@@ -338,7 +339,7 @@ class ContextEngine:
         candidates: list[Candidate] = list(candidates_anom)
         if self.plate_watch:
             candidates += self._eval_plate_watch(payload.get("objects", []))
-        candidates += self._eval_intrusion(newly_entered, now)
+        candidates += self._eval_intrusion(cam, now)
         candidates += self._eval_tailgating(cam, now)
         candidates += self._eval_loitering(cam, now)
         candidates += self._eval_crowd(cam, now)
@@ -646,32 +647,54 @@ class ContextEngine:
                     return val
         return default
 
-    def _eval_intrusion(self, entered: list[tuple[TrackState, str]], now: float) -> list[Candidate]:
+    def _eval_intrusion(self, cam: CameraState, now: float) -> list[Candidate]:
+        """Fire an intrusion only after the track has been CONTINUOUSLY inside the
+        restricted/perimeter zone for the (per-zone or global) confirmation window,
+        not on the first boundary-crossing frame. This rejects detection jitter and
+        bbox flicker at zone edges — the dominant geometric false-alarm source. The
+        _fire cooldown (keyed by track:zone) then dedups the sustained presence to a
+        single incident."""
         out = []
-        for st, zid in entered:
-            zm = self.zone_meta.get(zid)
-            if not zm or now - st.first_seen < settings.min_track_age_seconds:
+        for st in cam.tracks.values():
+            if now - st.first_seen < settings.min_track_age_seconds:
                 continue
-            ztype = zm["type"]
-            is_vehicle = st.object_class in settings.vehicle_classes
-            if ztype == "perimeter":
-                name = "Perimeter Breach"
-            elif ztype in ("restricted", "exclusion"):
-                name = "Vehicle in Restricted Zone" if is_vehicle else "Unauthorized Entry"
-            else:
-                continue
-            out.append(
-                Candidate(
-                    name,
-                    "zone_entry",
-                    f"{st.object_class} entered {zm['name']}",
-                    zid,
-                    f"{st.track_id}:{zid}",
-                    0.85,
-                    {"track_ids": [st.track_id], "bbox": st.last_bbox},
-                    {"zone": zm["name"], "zone_type": ztype, "object_class": st.object_class},
+            for zid in st.zones:
+                zm = self.zone_meta.get(zid)
+                if not zm:
+                    continue
+                ztype = zm["type"]
+                if ztype == "perimeter":
+                    name = "Perimeter Breach"
+                elif ztype in ("restricted", "exclusion"):
+                    is_vehicle = st.object_class in settings.vehicle_classes
+                    name = "Vehicle in Restricted Zone" if is_vehicle else "Unauthorized Entry"
+                else:
+                    continue
+                entered = st.zone_enter.get(zid)
+                if entered is None:
+                    continue
+                cz = zm.get("confirm_seconds")
+                confirm = float(cz) if cz is not None else settings.intrusion_confirm_seconds
+                held = now - entered
+                if held < confirm:
+                    continue  # not yet confirmed — still inside the jitter window
+                out.append(
+                    Candidate(
+                        name,
+                        "zone_entry",
+                        f"{st.object_class} in {zm['name']} for {held:.0f}s",
+                        zid,
+                        f"{st.track_id}:{zid}",
+                        0.85,
+                        {"track_ids": [st.track_id], "bbox": st.last_bbox},
+                        {
+                            "zone": zm["name"],
+                            "zone_type": ztype,
+                            "object_class": st.object_class,
+                            "confirmed_s": round(held, 1),
+                        },
+                    )
                 )
-            )
         return out
 
     def _eval_tailgating(self, cam: CameraState, now: float) -> list[Candidate]:

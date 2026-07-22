@@ -25,6 +25,11 @@ class ContextSettings(BaseSettings):
     min_track_age_seconds: float = 0.6
     default_cooldown_seconds: float = 45.0
     meta_refresh_seconds: float = 10.0
+    # Intrusion temporal confirmation: a track must remain continuously inside a
+    # restricted/perimeter zone this long before an intrusion fires — rejects
+    # boundary jitter and single-frame bbox flicker, the main geometric false-alarm
+    # source. Per-zone override via zone.meta.confirm_seconds. 0 = fire on entry.
+    intrusion_confirm_seconds: float = 1.0
 
     loiter_seconds: float = 8.0
     crowd_threshold: int = 8

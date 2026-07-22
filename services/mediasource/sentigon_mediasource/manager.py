@@ -7,6 +7,7 @@ from __future__ import annotations
 import contextlib
 import os
 import re
+import signal
 import subprocess
 import threading
 import time
@@ -160,12 +161,69 @@ class MediaSourceManager:
         ]
         return cmd
 
+    def _gst_nvenc_pipe(self, s: Source) -> str | None:
+        """Hardware-encode relay for MJPEG USB cameras: GStreamer does MJPEG decode
+        (NVDEC) + H.264 encode (NVENC) fully on the Jetson video engines, then pipes
+        raw H.264 to ffmpeg which only muxes+pushes RTSP (-c copy, no re-encode). This
+        replaces the ~80% libx264 CPU relay with ~11%. Returns None for sources this
+        path does not support (non-MJPEG usb, file, network) so the caller falls back
+        to the ffmpeg/libx264 relay."""
+        if s.type != "usb" or s.input_format != "mjpeg":
+            return None
+        w, h = s.resolution.split("x")
+        # Do NOT pin the capture framerate: UVC MJPEG cameras often offer only one rate
+        # (commonly 30fps) at a given resolution, and an unmatched framerate cap makes
+        # v4l2src fail negotiation. Let it negotiate the native rate; perception
+        # throttles to infer_fps downstream regardless.
+        gst = (
+            f"{settings.gst_launch_path} -q "
+            f"v4l2src device={s.url} io-mode=2 "
+            f"! image/jpeg,width={w},height={h} "
+            "! nvv4l2decoder mjpeg=1 ! nvvidconv "
+            "! nvv4l2h264enc insert-sps-pps=1 idrinterval=30 maxperf-enable=1 "
+            "! h264parse ! video/x-h264,stream-format=byte-stream ! fdsink"
+        )
+        ff = (
+            f"{settings.ffmpeg_path} -hide_banner -loglevel warning "
+            "-f h264 -i - -c copy "
+            f"-f rtsp -rtsp_transport tcp {settings.mediamtx_rtsp}/{s.path}"
+        )
+        return f"{gst} | {ff}"
+
+    @staticmethod
+    def _terminate(proc: subprocess.Popen) -> None:
+        """Kill the relay's whole process group. NVENC relays are a gst|ffmpeg shell
+        pipe, so terminating only the parent would orphan the encoder; every relay is
+        started in its own session so killpg cleans up both processes."""
+        with contextlib.suppress(Exception):
+            os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+        with contextlib.suppress(Exception):
+            proc.terminate()
+
     def _run_source(self, s: Source) -> None:
         backoff = settings.reconnect_base
         while not self._stop.is_set() and not s.stop_event.is_set():
-            proc = subprocess.Popen(
-                self._ffmpeg_cmd(s), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-            )
+            # NVENC hardware-encode relay for MJPEG USB cams when enabled+supported;
+            # otherwise the portable ffmpeg relay. start_new_session isolates each
+            # relay in its own process group so _terminate can kill a gst|ffmpeg pipe.
+            pipe = self._gst_nvenc_pipe(s) if settings.encoder == "nvenc" else None
+            if pipe is not None:
+                s.codec = "h264(nvenc)"
+                proc = subprocess.Popen(
+                    pipe,
+                    shell=True,  # noqa: S602 (trusted, built from local config)
+                    executable="/bin/bash",
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    start_new_session=True,
+                )
+            else:
+                proc = subprocess.Popen(
+                    self._ffmpeg_cmd(s),
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    start_new_session=True,
+                )
             self.procs[s.path] = proc
             s.status = "publishing"
             log.info("mediasource.publishing", name=s.name, path=s.path, codec=s.codec)
@@ -335,8 +393,7 @@ class MediaSourceManager:
         for s in self.sources:
             s.stop_event.set()
         for p in self.procs.values():
-            with contextlib.suppress(Exception):
-                p.terminate()
+            self._terminate(p)
         for t in self.threads.values():
             t.join(timeout=5.0)
 
@@ -349,8 +406,7 @@ class MediaSourceManager:
         s.stop_event.set()
         proc = self.procs.pop(s.path, None)
         if proc is not None:
-            with contextlib.suppress(Exception):
-                proc.terminate()
+            self._terminate(proc)
         t = self.threads.pop(s.path, None)
         if t is not None:
             t.join(timeout=5.0)

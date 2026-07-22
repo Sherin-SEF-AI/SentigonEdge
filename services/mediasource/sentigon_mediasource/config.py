@@ -20,12 +20,17 @@ class MediaSourceSettings(BaseSettings):
     )
 
     ffmpeg_path: str = str(_REPO_ROOT / "tools" / "ffmpeg")
+    gst_launch_path: str = "gst-launch-1.0"  # for the NVENC hardware-encode relay
     ffprobe_path: str = str(_REPO_ROOT / "tools" / "ffprobe")
     config_file: str = str(_REPO_ROOT / "configs" / "media_sources.yaml")
-    # Relay video encoder (configurable). "libx264" is the reliable CPU default.
-    # "h264_v4l2m2m" is the Jetson hardware encoder — much lower CPU, but on some
-    # JetPack/ffmpeg builds it needs extra params or conflicts with the v4l2 capture
-    # device, so it is opt-in (test with a single source before enabling fleet-wide).
+    # Relay video encoder (configurable):
+    #   "libx264" — portable CPU default (works for every source type).
+    #   "nvenc"   — Jetson hardware encode for MJPEG USB cams: a GStreamer pipeline
+    #               (nvv4l2decoder + nvv4l2h264enc) does decode+encode on the video
+    #               engines and ffmpeg only muxes/pushes RTSP (-c copy). Measured
+    #               ~11% vs ~61% CPU for one 720p relay. Non-MJPEG/file/network
+    #               sources auto-fall back to libx264. (ffmpeg's own h264_v4l2m2m is
+    #               broken on this JetPack build, so GStreamer is the hardware path.)
     encoder: str = "libx264"
 
     mediamtx_rtsp: str = "rtsp://localhost:8554"

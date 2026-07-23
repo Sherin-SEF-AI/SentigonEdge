@@ -23,6 +23,11 @@ storage, and the operator console) runs on one Orin. Nothing is required to leav
 - **Ingest and recording.** RTSP streams are captured, relayed through MediaMTX for
   browser playback (WebRTC/HLS), recorded in segments to object storage, and kept in a
   short pre-roll ring buffer so evidence exists from *before* an incident fired.
+- **Any camera or sensor.** Cameras onboard by URL (RTSP/RTMP/SRT/HLS/MJPEG), by USB
+  scan, or by *pushing* to the box (RTMP/SRT/WHIP) — a body cam or phone streamer is
+  auto-detected and registered as a camera. A generic **sensor plane** ingests non-camera
+  devices (door contacts, PIR motion, environmental, panic buttons, or any generic
+  webhook/MQTT feed) as `sensor.events` that fuse with video into incidents.
 - **Perception (on the Orin GPU).** Per-camera workers run object detection and
   multi-object tracking (ByteTrack), with optional pose, license-plate reading (ANPR),
   and appearance embeddings for cross-camera re-identification. Detection runs as a
@@ -36,10 +41,13 @@ storage, and the operator console) runs on one Orin. Nothing is required to leav
   P1–P4 priority band. Repeat detections of the same thing roll into one open incident.
 - **VLM verification.** High-value candidates are sent with pre/post-roll frames to a
   local vision-language model (Qwen2.5-VL via Ollama) that returns a verdict and a short
-  rationale, which re-scores the incident.
-- **Signal fusion.** Access-control events (badge reads, door-forced, door-held) are
-  correlated with live video on a shared timeline and can elevate an ordinary video event
-  into a confirmed incident.
+  rationale, which re-scores the incident. High-stakes or inconclusive verdicts can
+  optionally escalate to a fast external text reasoner (Groq) for a sharper adjudication,
+  SITREP, and recommended action — off the streaming hot path; vision stays local.
+- **Signal fusion.** Access-control events (badge reads, door-forced, door-held) and
+  generic sensor events (contacts, motion, environmental, panic) are correlated with live
+  video on a shared timeline and can elevate an ordinary video event into a confirmed
+  incident.
 - **Response workflows.** Confirmed incidents drive actions: escalate, open a case, send
   email/webhook/web-push, run a timeline investigation, or play a spoken talk-down.
 - **Responder dispatch (managed-SOC).** Confirmed high/critical incidents create a
@@ -67,6 +75,9 @@ another's database; they publish and consume typed messages on topics.
 ```mermaid
 flowchart LR
     CAM[IP cameras / RTSP] --> MTX[MediaMTX relay]
+    PUSH[Body cams / phones<br/>RTMP · SRT · WHIP push] --> MTX
+    SRC[mediasource<br/>URL / USB / device-push onboard<br/>NVENC relay] --> MTX
+    SENS[Sensors / IoT<br/>webhook · MQTT] -->|sensor.events| CTX
     MTX --> ING[ingest<br/>capture, record, health]
     MTX --> WEB[Console<br/>WebRTC playback]
     ING --> MINIO[(MinIO<br/>recordings)]
@@ -101,8 +112,8 @@ used by every service.
 | `fleet` | Camera + service + host health diagnostics |
 | `crosssite` | Multi-site provisioning and cross-site entity correlation |
 | `search` | Semantic, visual, and ReID forensic search over embeddings |
-| `api` | REST API and backend for the console; threats, analytics, schedules, watchlists |
-| `mediasource` | Registers sample video files as live RTSP cameras for development |
+| `api` | REST API and console backend; threats, analytics, schedules, watchlists, device registry + sensor-event webhook + MQTT bridge |
+| `mediasource` | Generic camera onboarding — any RTSP/RTMP/SRT/HLS/MJPEG URL, USB scan, device-push auto-onboard — with an NVENC hardware relay to MediaMTX (libx264 fallback) |
 | `governance` | Model evaluation harness and champion-challenger promotion |
 | `mcp` | Model Context Protocol surface for incident and search access |
 
@@ -117,12 +128,19 @@ GPU-bound parts are tuned for the Orin:
   and is only intended for bring-up.
 - **The vision-language tier runs locally** through [Ollama](https://ollama.com)
   (Qwen2.5-VL), using the Orin's unified memory. It shares the GPU with perception.
+- **The media relay uses NVENC** (hardware H.264 encode via GStreamer) for MJPEG USB
+  cameras — measured ~80% lower CPU than software `libx264` for a 720p stream. An optional
+  **NVDEC hardware-decode** path in perception (`PERCEPTION_HW_DECODE`) offloads video
+  decode from the CPU; it earns its keep at many-camera / high-resolution scale.
 - Set the board to its full power mode (`sudo nvpmodel -m 0 && sudo jetson_clocks`) for
   best throughput.
 
 The reasoning tier is pluggable through `REASON_ENDPOINT`, `REASON_MODEL`, and
 `REASON_BACKEND`: the same service can point at a larger model served elsewhere for batch
-verification without touching application code.
+verification without touching application code. Separately, an optional escalation tier
+(`REASON_SVC_ESCALATE_*`) sends the local VLM's scene description plus context to a fast
+external text reasoner (e.g. Groq `gpt-oss-120b`) for a second-opinion verdict on
+high-stakes incidents — vision never leaves the box.
 
 ## Models
 

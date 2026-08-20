@@ -156,6 +156,50 @@ All models run locally and are fetched separately (they are not committed to the
 | Vision-language reasoning | Qwen2.5-VL (local, via Ollama) |
 | Text-to-speech | Piper |
 
+### Pretrained anomaly models
+
+A set of surveillance anomaly models trained on the public
+[UCF-Crime](https://www.crcv.ucf.edu/projects/real-world/) dataset (1900 untrimmed
+real-world CCTV videos) is published under
+[Releases](https://github.com/Sherin-SEF-AI/SentigonEdge/releases/tag/ucf-crime-models-v1),
+with weights, metrics, and the training code. They are research artifacts, not part of the
+running stack — the `context` service learns its own per-zone baselines online — but they
+are a reference point for the anomaly and verification tiers.
+
+**Anomaly detection** — is something anomalous happening? A 2.1 M-parameter multiple-
+instance-learning ranker over C3D features, trained from video-level labels only:
+
+| Model | Frame AUC | False alarm @0.5 |
+|---|---|---|
+| `ucf-crime-mil-detector.pt` | **0.7550** | 1.8% |
+
+Published baseline for this architecture is 0.7541. Strongest on abrupt events (Assault
+0.937, Arson 0.886, Explosion 0.884), weakest on subtle ones (Abuse 0.627). It is a
+video-level flagger, not a temporal localiser: within an already-flagged video its
+segment-level AUC is 0.527, near chance.
+
+**Event recognition** — what kind of event is this? LoRA adapters for SmolVLM-500M
+(19.1 M trainable params), classifying frames into six coarse categories (`Normal`,
+`Theft`, `Violence`, `Weapons`, `Destruction`, `Traffic`):
+
+| Pipeline | Video acc | Balanced acc |
+|---|---|---|
+| Zero-shot SmolVLM-500M | 0.2452 | 0.2181 |
+| Fine-tuned, uniform frame sampling | 0.4710 | 0.4781 |
+| Fine-tuned + MIL-guided frames | 0.5032 | 0.4910 |
+| **Fine-tuned + 3-view ensemble** | **0.5161** | **0.5493** |
+
+The last two rows are the same weights: the detector localises the event and the VLM
+classifies the frames it points at, which is worth +0.07 balanced accuracy at inference
+time with no retraining.
+
+**Scope.** These get roughly half of test videos right across six coarse classes — useful
+for ranking clips for human review, not for automated judgements about what happened.
+Categories defined by motion and intent rather than appearance (Shooting, Abuse, Assault)
+stay weak regardless of tuning. The release also includes a deliberately published
+negative result: a ResNet-18 frame classifier that never beat a majority-class baseline,
+because UCF-Crime's frame labels are video-level labels propagated to every frame.
+
 <p align="center">
   <img src="docs/images/incident-reconstruction.png" alt="Multi-camera incident reconstruction timeline" width="900">
   <br>

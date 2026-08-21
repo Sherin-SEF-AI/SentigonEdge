@@ -117,6 +117,118 @@ used by every service.
 | `governance` | Model evaluation harness and champion-challenger promotion |
 | `mcp` | Model Context Protocol surface for incident and search access |
 
+### PPE detection models
+
+Two YOLO11m detectors trained on the PPE datasets, published under
+[`ppe-models-v1`](https://github.com/Sherin-SEF-AI/SentigonEdge/releases/tag/ppe-models-v1)
+with weights, metrics, and the training and benchmark code.
+
+**Construction PPE** — seven classes merged from four public datasets
+(Roboflow Construction Site Safety, Roboflow PPE Dataset, Ultralytics
+construction-ppe, and Hard Hat Workers), 13,150 images and ~76k boxes.
+Scored on a **held-out test split** excluded from both training and
+checkpoint selection:
+
+| Class | mAP50 | mAP50-95 | Precision | Recall |
+|---|---|---|---|---|
+| `person` | 0.847 | 0.610 | 0.868 | 0.812 |
+| `helmet` | 0.947 | 0.607 | 0.910 | 0.919 |
+| `no_helmet` | 0.842 | 0.533 | 0.849 | 0.833 |
+| `vest` | 0.900 | 0.628 | 0.867 | 0.872 |
+| `no_vest` | 0.832 | 0.509 | 0.822 | 0.812 |
+| `mask` | 0.358 | 0.260 | 0.884 | 0.272 |
+| `no_mask` | 0.126 | 0.041 | 0.375 | 0.063 |
+| **all 7** | **0.693** | 0.455 | 0.796 | 0.655 |
+
+The five core classes average **mAP50 0.874**. `mask` and `no_mask` are
+weak and drag the 7-class average down: only one of the four source datasets
+labels them, leaving 28 and 79 test boxes respectively. `mask` precision is
+0.884 but recall only 0.272 — when it fires it is usually right,
+but it misses most instances. Treat this as a hardhat/vest detector; the two
+mask classes need a dedicated dataset before they are usable.
+
+**Clinical PPE** — 18 classes covering gown, glove, mask, N95, face-shield,
+eyewear and PAPR state plus Head, from 8,481 annotated frames and 104k boxes
+of clinical donning/doffing simulations. Trained under two splits, because
+the split choice changes the result more than any hyperparameter:
+
+| Split | mAP50 | mAP50-95 | Precision | Recall |
+|---|---|---|---|---|
+| Frame-level (the dataset's own) | 0.901 | 0.514 | 0.894 | 0.877 |
+| **Session held out** | **0.585** | 0.272 | 0.651 | 0.571 |
+
+The dataset's own split draws train and test frames from all 26 videos, so
+near-identical adjacent frames sit on both sides of it. The second split holds
+out six whole sessions, so nothing from a test video is ever trained on.
+The gap (0.901 → 0.585 mAP50) is the portion of the
+first number that comes from frame adjacency rather than generalisation.
+**The session-held-out number is the one to trust for a new room or camera.**
+
+### Real-world benchmark
+
+Every model was run end to end on video it had never seen, to check the
+pipeline works outside a test harness.
+
+**PPE on unseen construction footage.** Six freely-licensed clips from Pexels
+(2,384 frames), none of them in any training set. A violation is not a single
+frame: a detection must persist across frames inside a short window before an
+event fires, so a turned head or one blurred frame does not raise an alarm.
+
+- 30,131 detections, 10 sustained violation events
+- 21.7–32.7 FPS at 640px on an RTX 5080 (mean 28.1), while the GPU was shared with another training run
+- detections by class: `person` 10,303, `helmet` 9,848, `no_vest` 6,132, `vest` 3,522, `no_helmet` 326
+
+![PPE violations detected](docs/images/ppe-violations-detected.jpg)
+*Workers detected without hi-vis vests on an active pour. `no_vest` fires on the
+workers in plain clothing; `helmet` fires on those wearing hard hats.*
+
+![No violations on a compliant site](docs/images/ppe-compliant-no-violations.jpg)
+*Control case: these workers are wearing vests and helmets, and the model
+reported zero violations for this clip. A violation detector that never
+returns "compliant" is useless, so this case matters as much as the one above.*
+
+![Single worker detection](docs/images/ppe-single-worker-detection.jpg)
+*`helmet` 0.80, `no_vest` 0.46 — correct on both counts.*
+
+These clips carry no ground-truth boxes, so they measure **throughput and
+behaviour, not accuracy**. The accuracy numbers above come from labelled
+held-out splits. The frames shown were checked by eye against the footage.
+
+**Anomaly detection on real CCTV.** The full two-stage chain — decode →
+MIL detector scores 32 temporal segments → frames sampled from the top-scoring
+segments → SmolVLM classifies each clip → majority vote — run from raw mp4 over
+155 held-out UCF-Crime test videos, which do have ground truth.
+
+| Metric | Result |
+|---|---|
+| Video-level AUC, anomalous vs normal (MIL peak score) | **0.911** |
+| Mean MIL peak score, anomalous videos | 0.696 |
+| Mean MIL peak score, normal videos | 0.001 |
+| 6-way event classification, end to end from mp4 | 0.484 |
+| Same, measured earlier on pre-extracted frames | 0.503 |
+
+The two classification numbers agreeing is the point: the raw-video pipeline
+reproduces the offline benchmark, so the chain is wired correctly.
+
+Per class, end to end:
+
+| Class | Correct | Accuracy |
+|---|---|---|
+| Destruction | 6/14 | 0.429 |
+| Normal | 8/15 | 0.533 |
+| Theft | 27/44 | 0.614 |
+| Traffic | 21/23 | 0.913 |
+| Violence | 8/15 | 0.533 |
+| Weapons | 5/44 | 0.114 |
+
+**Limits, stated plainly.** `Weapons` is near-useless at 5/44 — a gun is a few pixels in CCTV and an
+explosion lasts a second or two. The false-alarm rate looks perfect at the 0.5
+threshold, but only 15 normal videos were in this run, so that figure is
+indicative, not established. And the MIL stage needs precomputed C3D features,
+which exist for UCF-Crime but not for arbitrary footage — running this chain on
+a new camera needs a C3D feature extractor that is not part of this release.
+
+
 ## Built for the Jetson AGX Orin
 
 SentigonEdge is developed and run on a Jetson AGX Orin (64 GB), JetPack 6/7. The
@@ -155,6 +267,50 @@ All models run locally and are fetched separately (they are not committed to the
 | Pose / fall | YOLO pose |
 | Vision-language reasoning | Qwen2.5-VL (local, via Ollama) |
 | Text-to-speech | Piper |
+
+### Pretrained anomaly models
+
+A set of surveillance anomaly models trained on the public
+[UCF-Crime](https://www.crcv.ucf.edu/projects/real-world/) dataset (1900 untrimmed
+real-world CCTV videos) is published under
+[Releases](https://github.com/Sherin-SEF-AI/SentigonEdge/releases/tag/ucf-crime-models-v1),
+with weights, metrics, and the training code. They are research artifacts, not part of the
+running stack — the `context` service learns its own per-zone baselines online — but they
+are a reference point for the anomaly and verification tiers.
+
+**Anomaly detection** — is something anomalous happening? A 2.1 M-parameter multiple-
+instance-learning ranker over C3D features, trained from video-level labels only:
+
+| Model | Frame AUC | False alarm @0.5 |
+|---|---|---|
+| `ucf-crime-mil-detector.pt` | **0.7550** | 1.8% |
+
+Published baseline for this architecture is 0.7541. Strongest on abrupt events (Assault
+0.937, Arson 0.886, Explosion 0.884), weakest on subtle ones (Abuse 0.627). It is a
+video-level flagger, not a temporal localiser: within an already-flagged video its
+segment-level AUC is 0.527, near chance.
+
+**Event recognition** — what kind of event is this? LoRA adapters for SmolVLM-500M
+(19.1 M trainable params), classifying frames into six coarse categories (`Normal`,
+`Theft`, `Violence`, `Weapons`, `Destruction`, `Traffic`):
+
+| Pipeline | Video acc | Balanced acc |
+|---|---|---|
+| Zero-shot SmolVLM-500M | 0.2452 | 0.2181 |
+| Fine-tuned, uniform frame sampling | 0.4710 | 0.4781 |
+| Fine-tuned + MIL-guided frames | 0.5032 | 0.4910 |
+| **Fine-tuned + 3-view ensemble** | **0.5161** | **0.5493** |
+
+The last two rows are the same weights: the detector localises the event and the VLM
+classifies the frames it points at, which is worth +0.07 balanced accuracy at inference
+time with no retraining.
+
+**Scope.** These get roughly half of test videos right across six coarse classes — useful
+for ranking clips for human review, not for automated judgements about what happened.
+Categories defined by motion and intent rather than appearance (Shooting, Abuse, Assault)
+stay weak regardless of tuning. The release also includes a deliberately published
+negative result: a ResNet-18 frame classifier that never beat a majority-class baseline,
+because UCF-Crime's frame labels are video-level labels propagated to every frame.
 
 <p align="center">
   <img src="docs/images/incident-reconstruction.png" alt="Multi-camera incident reconstruction timeline" width="900">
